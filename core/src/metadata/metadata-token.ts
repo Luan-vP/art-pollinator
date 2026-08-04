@@ -9,23 +9,48 @@
  */
 
 import { METADATA_TOKEN_MAX_BYTES } from "../constants.js";
+import { canonicalStringify } from "../crypto/canonical-json.js";
+import { hexDecode, utf8Encode } from "../crypto/bytes.js";
+import type { SignatureVerifierPort } from "../ports/signature-verifier-port.js";
 
 /**
- * Placeholder provenance shape.
+ * Provenance — issue #21. **Hop count only, never an identified path.**
  *
- * Full lineage/provenance design is issue #21 (a later batch), and SPEC.md
- * §7 flags an open risk it must resolve first: a token recording an
- * *identified* hop path, combined with nodes' persistent identities, becomes
- * a readable record of which venues its holder visited. This stub
- * deliberately records only a hop **count** (see `PrioritySignals.hopCount`
- * in `../priority/priority.js`, which reads the same value) — never an
- * identified path — so nothing here forecloses that design question. When
- * #21 lands, it can extend this shape (e.g. with signed hop-count
- * attestations); it should not need to remove anything this stub added.
+ * SPEC.md §7 / §11 open question 1: a token recording an *identified* hop
+ * path, combined with nodes' persistent identities, becomes a readable
+ * record of which venues its holder visited. `docs/adr/0007-provenance-hop-count-only.md`
+ * formalizes this as the resolved decision — see that ADR for the rejected
+ * alternative and the reasoning. This shape has carried only a hop
+ * **count** since the original stub (see `PrioritySignals.hopCount` in
+ * `../priority/priority.js`, which reads the same value); #21 confirms that
+ * was the right call rather than changing it, and wires
+ * {@link incrementHopCount} into `SwapService`'s transfer step so the count
+ * actually advances as a token changes hands.
  */
 export interface Provenance {
-  /** Number of hops since the item's origin. Not an identified path — see above. */
+  /** Number of hops since the item's origin (0 = authored/added on this device). Not an identified path — see above. */
   readonly hopCount: number;
+}
+
+/**
+ * Return a copy of `token` with its hop count incremented by one.
+ *
+ * Called once per hop, at the point a device *receives* a token from a peer
+ * (not when it sends one — sending is not a hop for the sender). See
+ * `app/src/swap/swap-service.ts`'s transfer step, and
+ * `docs/adr/0007-provenance-hop-count-only.md` for why this is the entire
+ * lineage `core` records.
+ *
+ * Deliberately does not touch `signature`/`signerPublicKey`: the signed
+ * payload ({@link canonicalizeTokenForSigning}) excludes `provenance`
+ * specifically so that a token's signature — the original signer's
+ * assertion about the *piece itself* — stays valid across every hop, even
+ * though the hop count changes at each one. If provenance were covered by
+ * the signature, every intermediate holder would need to re-sign, which
+ * would require them to hold a key the original signer never gave them.
+ */
+export function incrementHopCount(token: MetadataToken): MetadataToken {
+  return { ...token, provenance: { hopCount: token.provenance.hopCount + 1 } };
 }
 
 /**
@@ -46,11 +71,17 @@ export interface BlobPointer {
 /**
  * A `MetadataToken`, per SPEC.md §3.1.
  *
- * `signature` is a placeholder string field for now; real signing and
- * verification is issue #58 (a later batch, cross-cutting with identity
- * work #57). An empty string means "unsigned" — callers/policies that care
- * about signature verification decide how to treat that, `core` does not
- * assume every token is signed yet.
+ * `signature` and `signerPublicKey` are issue #58 (token signing and
+ * verification), building on the identity work in issue #57
+ * (`../ports/identity-port.js`). An empty `signature` (or a missing
+ * `signerPublicKey`) means "unsigned" — see {@link isTokenSigned}. Both
+ * fields are excluded from what actually gets signed
+ * ({@link canonicalizeTokenForSigning}) for the obvious reason (a signature
+ * cannot cover itself); `signerPublicKey` specifically is hex-encoded
+ * (rather than `Uint8Array`) so the token stays a plain JSON-serialisable
+ * value end to end, matching every other field here — a 32-byte Ed25519
+ * public key is 64 hex characters, comfortably inside the ~5 KB budget
+ * (AGENTS.md §6) alongside a 64-byte (128 hex character) signature.
  */
 export interface MetadataToken {
   readonly title: string;
@@ -66,8 +97,92 @@ export interface MetadataToken {
   /** Content hash of the full piece this token points at (SPEC.md §3.2: blobs always addressed by content hash). */
   readonly contentHash: string;
 
-  /** Placeholder for issue #58 (token signing). Empty string means unsigned. */
+  /** Hex-encoded signature over {@link canonicalizeTokenForSigning}'s output. Empty string means unsigned. */
   readonly signature: string;
+
+  /** Hex-encoded public key of the identity that produced `signature` (issue #57's `DeviceIdentity.publicKey`). Absent means unsigned. */
+  readonly signerPublicKey?: string;
+}
+
+/**
+ * The exact fields a signature covers, per {@link canonicalizeTokenForSigning}.
+ * Deliberately excludes `signature`/`signerPublicKey` (circular) and
+ * `provenance` (mutable per-hop — see {@link incrementHopCount}'s doc
+ * comment for why that must not invalidate the signature).
+ */
+interface SignedTokenFields {
+  readonly title: string;
+  readonly creator: string;
+  readonly description: string;
+  readonly contentType: string;
+  readonly blobPointer: BlobPointer;
+  readonly contentHash: string;
+}
+
+function signedFields(token: MetadataToken): SignedTokenFields {
+  return {
+    title: token.title,
+    creator: token.creator,
+    description: token.description,
+    contentType: token.contentType,
+    blobPointer: token.blobPointer,
+    contentHash: token.contentHash,
+  };
+}
+
+/**
+ * The canonical bytes a `MetadataToken`'s signature covers — issue #58's
+ * interim canonicalization ("a simple deterministic JSON stringify with
+ * sorted keys is fine ... to be superseded by #24's real wire format").
+ * Uses {@link canonicalStringify} (`../crypto/canonical-json.js`) so the
+ * result is stable regardless of field construction order, then UTF-8
+ * encodes it — the same two-step shape `#24`'s wire codec uses for whole
+ * messages (`../protocol/swap-message-codec.js`), just scoped to the fields
+ * a signer actually vouches for (see {@link SignedTokenFields}).
+ */
+export function canonicalizeTokenForSigning(token: MetadataToken): Uint8Array {
+  return utf8Encode(canonicalStringify(signedFields(token)));
+}
+
+/**
+ * `true` if `token` carries both a non-empty signature and a signer public
+ * key. Does not verify the signature is *valid* — see
+ * {@link verifyMetadataTokenSignature} for that. An unsigned token (empty
+ * signature, or no `signerPublicKey`) always returns `false` here; issue
+ * #58's policy is that unsigned tokens are rejected by default, and this is
+ * the cheap check that lets a caller short-circuit before ever invoking a
+ * `SignatureVerifierPort`.
+ */
+export function isTokenSigned(token: MetadataToken): boolean {
+  return token.signature !== "" && !!token.signerPublicKey && token.signerPublicKey !== "";
+}
+
+/**
+ * Verify `token`'s signature using `verifier` (a `SignatureVerifierPort` —
+ * issue #58). Returns `false` (never throws) for an unsigned token, a
+ * tampered token (any signed field mutated invalidates the signature — see
+ * {@link canonicalizeTokenForSigning}), or a malformed hex field.
+ *
+ * This function is pure — it only ever calls `verifier.verify`, which is
+ * itself synchronous and I/O-free (see `../ports/signature-verifier-port.js`'s
+ * doc comment) — so it can live in `core` even though the actual elliptic-
+ * curve math behind `verifier` lives in an adapter.
+ */
+export function verifyMetadataTokenSignature(
+  token: MetadataToken,
+  verifier: SignatureVerifierPort,
+): boolean {
+  if (!isTokenSigned(token)) {
+    return false;
+  }
+  try {
+    const publicKey = hexDecode(token.signerPublicKey as string);
+    const signature = hexDecode(token.signature);
+    const message = canonicalizeTokenForSigning(token);
+    return verifier.verify(publicKey, message, signature);
+  } catch {
+    return false; // malformed hex in signature/signerPublicKey — treat as unverifiable, not a crash
+  }
 }
 
 /** Canonical serialisation used both to measure size and to transmit the token. */

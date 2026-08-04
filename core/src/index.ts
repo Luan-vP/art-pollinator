@@ -9,8 +9,13 @@
  * model #7, PriorityPolicy seam #8, MetadataToken type #9, Slot/Library
  * aggregate #10/#11, driven port interfaces #17), the policies/fakes batch
  * (OfferPolicy #12, AcceptPolicy #13, EvictionPolicy #14, the policy
- * contract suite #15, in-memory port fakes #18), and this batch's slice: the
- * swap state machine (#16) and item-scoped encounter memory (#20).
+ * contract suite #15, in-memory port fakes #18), the swap-flow batch (swap
+ * state machine #16, item-scoped encounter memory #20), and this batch:
+ * identity/signing (#57/#58, `SignatureVerifierPort` + fake), provenance hop
+ * count (#21, `incrementHopCount`), the crypto primitives underneath
+ * hashing and signing (`./crypto/*`, #23/#58 — see
+ * `docs/adr/0008-crypto-primitives-in-a-zero-dependency-core.md`), and the
+ * transport-agnostic swap protocol schema and codec (#22/#24, `./protocol/*`).
  */
 export * from "./constants.js";
 export * from "./priority/priority.js";
@@ -26,3 +31,8 @@ export * from "./ports/index.js";
 export * from "./ports/fakes/index.js";
 export * from "./swap/swap-state-machine.js";
 export * from "./encounter/encounter-memory.js";
+export * from "./crypto/bytes.js";
+export * from "./crypto/sha256.js";
+export * from "./crypto/canonical-json.js";
+export * from "./protocol/swap-message.js";
+export * from "./protocol/swap-message-codec.js";
