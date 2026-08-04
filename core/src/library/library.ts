@@ -34,11 +34,39 @@
 
 import { MAX_LOCKABLE_SLOTS, SWAPPABLE_SLOTS } from "../constants.js";
 import type { MetadataToken } from "../metadata/metadata-token.js";
+import { toPriority, type Priority } from "../priority/priority.js";
 
-/** A single item's residency in a `Library`: the token plus which pool it currently occupies. */
+/**
+ * A single item's residency in a `Library`: the token, which pool it
+ * currently occupies, and its `Priority`.
+ *
+ * ## Cross-batch note (issue #14, touching issue #10's aggregate)
+ *
+ * `priority` was added by the eviction-policy batch, not the original
+ * `Library` slice. `EvictionPolicy`'s naive default ("lowest priority
+ * first" — IMPLEMENTATION.md Phase 1a item 14) has to rank *resident*
+ * items against each other, but `PriorityPolicy.score` (issue #8) takes a
+ * `PriorityContext` — recency, hop count, dwell, user rank — that isn't
+ * ambient state `Library` can recompute on demand, and `core` must not call
+ * `ClockPort` from inside the aggregate to derive it. Rather than have
+ * `EvictionPolicy` reach back out to a `PriorityContext` `Library` has no
+ * way to supply, the minimal fix is to carry the *already-computed*
+ * `Priority` scalar on the entry itself: whoever last scored the item (via
+ * a `PriorityPolicy`, at add-time or a later re-score — that call site does
+ * not exist yet in `core`) attaches the result here, and `Library` only
+ * ever carries it forward, never computes or interprets it.
+ *
+ * `addItem` defaults a new entry's priority to a neutral `toPriority(0)`
+ * when the caller doesn't supply one — mirroring how an unranked
+ * `userRank` is treated as neutral rather than ranked-at-the-bottom
+ * (`../policies/priority-policy.ts`) — and `lockItem`/`unlockItem` carry an
+ * existing entry's `priority` forward unchanged, exactly as they already do
+ * for `token`.
+ */
 export interface LibraryEntry {
   readonly token: MetadataToken;
   readonly locked: boolean;
+  readonly priority: Priority;
 }
 
 /**
@@ -96,8 +124,17 @@ export function hasContentHash(library: Library, contentHash: string): boolean {
  *   it must never consume a slot (SPEC.md §3.3, tracked further by the full
  *   hashing/dedup work in issue #23).
  * - If the swappable pool is already full, the add is rejected.
+ *
+ * `priority` defaults to a neutral `toPriority(0)` when omitted — see the
+ * cross-batch note on {@link LibraryEntry}. Callers that have already
+ * scored the item via a `PriorityPolicy` (e.g. on ingest, once that call
+ * site exists) may pass the result through directly.
  */
-export function addItem(library: Library, token: MetadataToken): LibraryOperationResult {
+export function addItem(
+  library: Library,
+  token: MetadataToken,
+  priority: Priority = toPriority(0),
+): LibraryOperationResult {
   if (library.entries.has(token.contentHash)) {
     return { ok: true, library };
   }
@@ -110,7 +147,7 @@ export function addItem(library: Library, token: MetadataToken): LibraryOperatio
   }
 
   const nextEntries = new Map(library.entries);
-  nextEntries.set(token.contentHash, { token, locked: false });
+  nextEntries.set(token.contentHash, { token, locked: false, priority });
   return { ok: true, library: withEntries(nextEntries) };
 }
 
@@ -154,7 +191,7 @@ export function lockItem(library: Library, contentHash: string): LibraryOperatio
   }
 
   const nextEntries = new Map(library.entries);
-  nextEntries.set(contentHash, { token: entry.token, locked: true });
+  nextEntries.set(contentHash, { token: entry.token, locked: true, priority: entry.priority });
   return { ok: true, library: withEntries(nextEntries) };
 }
 
@@ -189,6 +226,6 @@ export function unlockItem(library: Library, contentHash: string): LibraryOperat
   }
 
   const nextEntries = new Map(library.entries);
-  nextEntries.set(contentHash, { token: entry.token, locked: false });
+  nextEntries.set(contentHash, { token: entry.token, locked: false, priority: entry.priority });
   return { ok: true, library: withEntries(nextEntries) };
 }

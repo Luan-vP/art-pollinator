@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MAX_LOCKABLE_SLOTS, SWAPPABLE_SLOTS } from "../constants.js";
 import type { MetadataToken } from "../metadata/metadata-token.js";
+import { toPriority } from "../priority/priority.js";
 import {
   EMPTY_LIBRARY,
   addItem,
@@ -79,6 +80,31 @@ describe("addItem", () => {
     }
     const result = addItem(library, token("item-0"));
     expect(result.ok).toBe(true);
+  });
+});
+
+describe("priority (issue #14 cross-batch addition)", () => {
+  it("defaults a new entry's priority to neutral (0) when none is supplied", () => {
+    const library = expectOk(addItem(EMPTY_LIBRARY, token("a")));
+    expect(library.entries.get("a")?.priority).toBe(toPriority(0));
+  });
+
+  it("accepts an explicit priority on add", () => {
+    const library = expectOk(addItem(EMPTY_LIBRARY, token("a"), toPriority(42)));
+    expect(library.entries.get("a")?.priority).toBe(toPriority(42));
+  });
+
+  it("carries priority forward, unchanged, across lockItem", () => {
+    let library = expectOk(addItem(EMPTY_LIBRARY, token("a"), toPriority(7)));
+    library = expectOk(lockItem(library, "a"));
+    expect(library.entries.get("a")?.priority).toBe(toPriority(7));
+  });
+
+  it("carries priority forward, unchanged, across unlockItem", () => {
+    let library = expectOk(addItem(EMPTY_LIBRARY, token("a"), toPriority(7)));
+    library = expectOk(lockItem(library, "a"));
+    library = expectOk(unlockItem(library, "a"));
+    expect(library.entries.get("a")?.priority).toBe(toPriority(7));
   });
 });
 
