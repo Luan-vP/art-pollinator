@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-typecheck-test:
+    name: Lint, typecheck, test (core + adapters)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint (ESLint + dependency-direction rule)
+        run: npm run lint
+
+      - name: Prove the dependency-direction rule fails on violations
+        run: npm run verify:boundaries-rule
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Test — core (pure, no network/filesystem/device)
+        run: npm run test:core
+
+      - name: Test — app (use cases, depends on core only)
+        run: npm run test:app
+
+      - name: Test — adapters (integration, real I/O allowed)
+        run: npm run test:adapters
+
+  # --- Client target builds -------------------------------------------------
+  #
+  # The React Native client scaffold (iOS, Android, web from one codebase)
+  # does not exist yet — it lands in IMPLEMENTATION.md item #29, tracked as
+  # issue #29. Until then these are placeholder jobs so the CI *shape*
+  # required by AGENTS.md §4 ("All three client targets build") is already in
+  # place and ready to be filled in with a real build step, rather than
+  # bolted on later. Each step deliberately does nothing but report status
+  # and exit 0 — it must NOT be mistaken for a real build passing.
+  build-ios:
+    name: Build — iOS (placeholder, see #29)
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "client scaffold not yet implemented, see #29" && exit 0
+
+  build-android:
+    name: Build — Android (placeholder, see #29)
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "client scaffold not yet implemented, see #29" && exit 0
+
+  build-web:
+    name: Build — web (placeholder, see #29)
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "client scaffold not yet implemented, see #29" && exit 0
