@@ -7,9 +7,10 @@
  * (IMPLEMENTATION.md items 7-27). This entry point re-exports the fixed
  * domain constants scaffolded in Phase 0, the first Phase 1a slice (Priority
  * model #7, PriorityPolicy seam #8, MetadataToken type #9, Slot/Library
- * aggregate #10/#11, driven port interfaces #17), and this batch's slice:
- * OfferPolicy (#12), AcceptPolicy (#13), EvictionPolicy (#14), the policy
- * contract suite (#15), and in-memory port fakes (#18).
+ * aggregate #10/#11, driven port interfaces #17), the policies/fakes batch
+ * (OfferPolicy #12, AcceptPolicy #13, EvictionPolicy #14, the policy
+ * contract suite #15, in-memory port fakes #18), and this batch's slice: the
+ * swap state machine (#16) and item-scoped encounter memory (#20).
  */
 export * from "./constants.js";
 export * from "./priority/priority.js";
@@ -23,3 +24,5 @@ export * from "./metadata/metadata-token.js";
 export * from "./library/library.js";
 export * from "./ports/index.js";
 export * from "./ports/fakes/index.js";
+export * from "./swap/swap-state-machine.js";
+export * from "./encounter/encounter-memory.js";
