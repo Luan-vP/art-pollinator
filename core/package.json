@@ -1,0 +1,15 @@
+{
+  "name": "@art-pollinator/core",
+  "version": "0.0.0",
+  "description": "Pure domain: types, policies, state machines. ZERO I/O. ZERO external dependencies.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {}
+}
