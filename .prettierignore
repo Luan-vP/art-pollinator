@@ -1,0 +1,14 @@
+node_modules
+dist
+build
+.expo
+coverage
+package-lock.json
+
+# Pre-existing root docs (SPEC.md, AGENTS.md, IMPLEMENTATION.md, README.md)
+# predate this tooling and are intentionally left as authored to avoid
+# unrelated reformatting churn in this PR.
+/SPEC.md
+/AGENTS.md
+/IMPLEMENTATION.md
+/README.md
