@@ -1,0 +1,23 @@
+{
+  "name": "@art-pollinator/metadata-repository-sqlite",
+  "version": "0.0.0",
+  "description": "SqliteMetadataRepository — a MetadataRepositoryPort implementation backed by SQLite via Node's built-in node:sqlite module (issue #25). Versioned schema migrations run automatically on open (issue #27). See README.md for the SQLite binding decision and the migration/downgrade story.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@art-pollinator/core": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5"
+  }
+}

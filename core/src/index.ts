@@ -29,6 +29,7 @@ export * from "./metadata/metadata-token.js";
 export * from "./library/library.js";
 export * from "./ports/index.js";
 export * from "./ports/fakes/index.js";
+export * from "./ports/metadata-repository-contract-suite.js";
 export * from "./swap/swap-state-machine.js";
 export * from "./encounter/encounter-memory.js";
 export * from "./crypto/bytes.js";
