@@ -1,0 +1,17 @@
+{
+  "name": "@art-pollinator/app",
+  "version": "0.0.0",
+  "description": "Use cases (SwapService, LibraryService). Depends on core only.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@art-pollinator/core": "*"
+  }
+}
