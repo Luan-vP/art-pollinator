@@ -6,8 +6,8 @@
  * (issue #19, IMPLEMENTATION.md Phase 1a item 19).
  *
  * Lives in `app/` and depends only on `core` (AGENTS.md §2 rule 2, §5): the
- * eight port interfaces, the four policies, and the pure swap state machine
- * — never a concrete adapter, never platform code. This is the first real
+ * port interfaces, the four policies, and the pure swap state machine —
+ * never a concrete adapter, never platform code. This is the first real
  * use-case class in `app/`.
  *
  * ## Design: peer discovery is a caller concern, not a constructor dependency
@@ -29,21 +29,54 @@
  * "discover" still exists and is still exercised — only the scanning
  * mechanism is out of scope here.
  *
- * ## Design: the negotiation protocol is a minimal placeholder, not issue #22
+ * ## Design: the real, versioned protocol schema (issue #22/#24)
  *
- * The real swap protocol message schema (versioned, negotiated, identical
- * over BLE and HTTP) is issue #22, a later batch. This service needs
- * *some* concrete message shape today to drive `TransportPort`, so it uses
- * a two-round exchange (see `./swap-message-codec.ts`): each side sends its
- * (already `OfferPolicy`-selected, encounter-memory-filtered) candidate
- * offer as full `MetadataToken`s — cheap, per SPEC.md §3.1's size budget —
- * then each side sends back which content hashes of the *peer's* offer its
- * own `AcceptPolicy` decided to accept. This is enough to let each side
- * learn (a) what it actually received (to persist and reconcile) and
- * (b) which of *its own* offered items were declined by the peer (to record
- * via `EncounterLogPort`, issue #20) — without needing issue #22's full
- * design. A future adapter or the real protocol design replaces this codec
- * without needing to change the shape of this method's orchestration.
+ * This service now speaks `core`'s real transport-agnostic message schema
+ * (`@art-pollinator/core`'s `./swap-message.ts`/`./swap-message-codec.ts`,
+ * superseding the placeholder ADR-0006 originally stood up). Per that ADR's
+ * own prediction, only this file's `transport.send`/`receive` call sites
+ * changed — the state-machine driving, policy calls, and encounter-memory
+ * plug-in point below are unaffected. Two rounds per swap, same as before:
+ * round 1 exchanges `offer` messages (candidate `MetadataToken`s, already
+ * `OfferPolicy`-selected and encounter-memory-filtered); round 2 exchanges
+ * `accept` messages (which of the peer's offered content hashes this side's
+ * `AcceptPolicy` chose). The schema also defines `discover-ack`, `transfer`,
+ * and `reconcile-ack` message kinds (round-trip tested in `core`) that this
+ * batch does not yet send over the wire — see `core`'s
+ * `./protocol/swap-message.ts` doc comment for exactly why, and what would
+ * need to start sending them.
+ *
+ * ## Design: signature verification is a filter before AcceptPolicy runs, not inside it
+ *
+ * Issue #58 requires unsigned and tampered tokens to be rejected by policy.
+ * Rather than change `AcceptPolicy`'s interface (a core seam other batches
+ * already depend on) to thread a `SignatureVerifierPort` through it, this
+ * service filters the peer's inbound `offer` through
+ * `verifyMetadataTokenSignature` (`@art-pollinator/core`) *before* handing
+ * anything to `AcceptPolicy.selectAccept` — the same "filter the input at
+ * the orchestration layer, keep the policy itself unaware" split
+ * ADR-0006 already uses for encounter-memory suppression on the offer side.
+ * `signatureVerifier` is an optional constructor dependency: when supplied,
+ * every unsigned or tampered item is dropped before `AcceptPolicy` ever
+ * sees it (issue #58's "rejected by default" once verification is wired
+ * in); when omitted, verification is skipped entirely, which keeps existing
+ * callers/tests that construct plain unsigned fixture tokens working
+ * unchanged. A production composition root should always supply one; see
+ * `adapters/identity-node`'s `NodeSignatureVerifier` for the real
+ * Ed25519-backed implementation.
+ *
+ * ## Design: hop count increments once, at the point a token is received
+ *
+ * Issue #21 (provenance/lineage — see `docs/adr/0007-provenance-hop-count-only.md`,
+ * a decision that carries privacy weight, flagged prominently in this
+ * batch's PR description). `core`'s `incrementHopCount` is applied to every
+ * accepted item right before it is persisted and added to this device's
+ * library — never to items this device only *sends* (sending is not a hop
+ * for the sender). Because signatures deliberately exclude `provenance`
+ * (see `incrementHopCount`'s doc comment in `core`), incrementing hop count
+ * here never invalidates a token's signature, and the incremented value is
+ * what's already resident the next time this device offers the same item
+ * on to a third party — no separate "on offer" increment is needed.
  *
  * ## Design: where encounter-memory filtering plugs in
  *
@@ -63,9 +96,15 @@
 import {
   addItem,
   createInitialSwapState,
+  createAcceptMessage,
+  createOfferMessage,
+  decodeSwapProtocolMessage,
+  encodeSwapProtocolMessage,
   filterSuppressedCandidates,
+  incrementHopCount,
   removeItem,
   transition,
+  verifyMetadataTokenSignature,
   DEFAULT_ENCOUNTER_SUPPRESSION_WINDOW_MS,
   type AcceptPolicy,
   type ClockPort,
@@ -78,11 +117,11 @@ import {
   type LibraryOperationResult,
   type MetadataRepositoryPort,
   type OfferPolicy,
+  type SignatureVerifierPort,
   type SwapState,
   type SwapTransitionResult,
   type TransportPort,
 } from "@art-pollinator/core";
-import { decodeSwapMessage, encodeSwapMessage } from "./swap-message-codec.js";
 
 export interface SwapServiceDeps {
   readonly transport: TransportPort;
@@ -94,6 +133,15 @@ export interface SwapServiceDeps {
   readonly evictionPolicy: EvictionPolicy;
   /** How long a declined/evicted content hash stays suppressed from re-offering (SPEC.md §6.4). Defaults to {@link DEFAULT_ENCOUNTER_SUPPRESSION_WINDOW_MS}. */
   readonly encounterSuppressionWindowMs?: number;
+  /**
+   * Verifies inbound token signatures (issue #58) before `AcceptPolicy` runs.
+   * Omit to skip verification entirely (see this file's doc comment); a
+   * production composition root should always supply one
+   * (`adapters/identity-node`'s `NodeSignatureVerifier`, or `core`'s
+   * `InMemorySignatureVerifierPort` fake in tests that want the check
+   * exercised without real cryptography).
+   */
+  readonly signatureVerifier?: SignatureVerifierPort;
 }
 
 /** The outcome of one completed swap, from this device's point of view. */
@@ -104,8 +152,10 @@ export interface SwapOutcome {
   readonly offered: readonly Item[];
   /** The subset of `offered` the peer actually accepted. */
   readonly sent: readonly Item[];
-  /** What this device accepted from the peer's offer (before reconciliation may evict other items to make room). */
+  /** What this device accepted from the peer's offer (after hop-count increment, issue #21; before reconciliation may evict other items to make room). */
   readonly accepted: readonly Item[];
+  /** Items the peer offered that failed signature verification (issue #58) — tampered or unsigned, dropped before `AcceptPolicy` ever saw them. Always empty when `signatureVerifier` is not configured. */
+  readonly rejectedUnverified: readonly Item[];
   /** What this device's `EvictionPolicy` evicted to make room for `accepted`. */
   readonly evicted: readonly Item[];
   /** The swap state machine's final state — `{ phase: "completed" }` on success. */
@@ -145,6 +195,7 @@ export class SwapService {
       offerPolicy,
       acceptPolicy,
       evictionPolicy,
+      signatureVerifier,
     } = this.deps;
     const suppressionWindowMs =
       this.deps.encounterSuppressionWindowMs ?? DEFAULT_ENCOUNTER_SUPPRESSION_WINDOW_MS;
@@ -164,30 +215,40 @@ export class SwapService {
       suppressionWindowMs,
     );
 
-    await transport.send(peer.address, encodeSwapMessage({ kind: "offer", items: offered }));
-    const inboundOffer = decodeSwapMessage((await transport.receive()).message);
+    await transport.send(peer.address, encodeSwapProtocolMessage(createOfferMessage(offered)));
+    const inboundOffer = decodeSwapProtocolMessage((await transport.receive()).message);
     if (inboundOffer.kind !== "offer") {
       throw new Error(`SwapService: expected an "offer" message, got "${inboundOffer.kind}"`);
     }
-    const peerOffer = inboundOffer.items;
+
+    // --- Signature verification (issue #58): drop unsigned/tampered items
+    // before AcceptPolicy ever sees them. Skipped entirely when no
+    // verifier is configured — see this file's doc comment. ---
+    const { verified: peerOffer, rejected: rejectedUnverified } = signatureVerifier
+      ? partitionBySignature(inboundOffer.body.items, signatureVerifier)
+      : { verified: inboundOffer.body.items, rejected: [] as readonly Item[] };
 
     // --- Accept step ---
-    const accepted = acceptPolicy.selectAccept(peerOffer, library);
+    const acceptedBeforeHop = acceptPolicy.selectAccept(peerOffer, library);
 
     await transport.send(
       peer.address,
-      encodeSwapMessage({
-        kind: "ack",
-        acceptedContentHashes: accepted.map((item) => item.contentHash),
-      }),
+      encodeSwapProtocolMessage(
+        createAcceptMessage(acceptedBeforeHop.map((item) => item.contentHash)),
+      ),
     );
-    const inboundAck = decodeSwapMessage((await transport.receive()).message);
-    if (inboundAck.kind !== "ack") {
-      throw new Error(`SwapService: expected an "ack" message, got "${inboundAck.kind}"`);
+    const inboundAck = decodeSwapProtocolMessage((await transport.receive()).message);
+    if (inboundAck.kind !== "accept") {
+      throw new Error(`SwapService: expected an "accept" message, got "${inboundAck.kind}"`);
     }
-    const peerAcceptedHashes = new Set(inboundAck.acceptedContentHashes);
+    const peerAcceptedHashes = new Set(inboundAck.body.acceptedContentHashes);
     const sent = offered.filter((item) => peerAcceptedHashes.has(item.contentHash));
     const declinedByPeer = offered.filter((item) => !peerAcceptedHashes.has(item.contentHash));
+
+    // --- Provenance (issue #21): hop count increments once, here, at the
+    // point this device actually receives each accepted item. See this
+    // file's doc comment and docs/adr/0007-provenance-hop-count-only.md. ---
+    const accepted = acceptedBeforeHop.map((item) => incrementHopCount(item));
 
     state = unwrapTransition(
       transition(state, { type: "NEGOTIATION_COMPLETE", toSend: sent, toReceive: accepted }),
@@ -220,8 +281,33 @@ export class SwapService {
       await encounterLog.record(item.contentHash, "evicted", now);
     }
 
-    return { library: nextLibrary, offered, sent, accepted, evicted, state };
+    return {
+      library: nextLibrary,
+      offered,
+      sent,
+      accepted,
+      rejectedUnverified,
+      evicted,
+      state,
+    };
   }
+}
+
+/** Split `items` into those whose signature verifies and those that don't (unsigned or tampered — issue #58). */
+function partitionBySignature(
+  items: readonly Item[],
+  verifier: SignatureVerifierPort,
+): { readonly verified: readonly Item[]; readonly rejected: readonly Item[] } {
+  const verified: Item[] = [];
+  const rejected: Item[] = [];
+  for (const item of items) {
+    if (verifyMetadataTokenSignature(item, verifier)) {
+      verified.push(item);
+    } else {
+      rejected.push(item);
+    }
+  }
+  return { verified, rejected };
 }
 
 async function loadEncounterHistory(

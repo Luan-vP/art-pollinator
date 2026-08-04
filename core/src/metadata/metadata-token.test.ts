@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  canonicalizeTokenForSigning,
+  incrementHopCount,
+  isTokenSigned,
   isWithinSizeBudget,
   metadataTokenByteSize,
   serializeMetadataToken,
   validateMetadataTokenSize,
+  verifyMetadataTokenSignature,
   type MetadataToken,
 } from "./metadata-token.js";
 import { METADATA_TOKEN_MAX_BYTES } from "../constants.js";
+import { hexEncode } from "../crypto/bytes.js";
+import { InMemoryIdentityPort } from "../ports/fakes/in-memory-identity-port.js";
+import { InMemorySignatureVerifierPort } from "../ports/fakes/in-memory-signature-verifier-port.js";
 
 /** Deterministic filler text of a given length — no randomness needed in `core` tests. */
 function fillerText(length: number): string {
@@ -112,5 +119,127 @@ describe("size budget — maximally-stuffed token", () => {
     // without needing every field maxed out simultaneously.
     const edgeToken = makeToken({ description: fillerText(2000) });
     expect(isWithinSizeBudget(edgeToken)).toBe(true);
+  });
+});
+
+describe("token signing and verification — issue #58", () => {
+  async function signToken(token: MetadataToken, identity: InMemoryIdentityPort) {
+    const current = await identity.getCurrentIdentity();
+    const message = canonicalizeTokenForSigning(token);
+    const signatureBytes = await identity.sign(message);
+    return {
+      ...token,
+      signature: hexEncode(signatureBytes),
+      signerPublicKey: hexEncode(current.publicKey),
+    };
+  }
+
+  it("an unsigned token (empty signature, no signerPublicKey) is never treated as signed", () => {
+    const token = makeToken();
+    expect(isTokenSigned(token)).toBe(false);
+  });
+
+  it("a token with a signerPublicKey but an empty signature is still unsigned", () => {
+    const token = makeToken({ signerPublicKey: "aa".repeat(32) });
+    expect(isTokenSigned(token)).toBe(false);
+  });
+
+  it("verification rejects an unsigned token outright, without calling the verifier", () => {
+    const token = makeToken();
+    const verifier = new InMemorySignatureVerifierPort();
+    expect(verifyMetadataTokenSignature(token, verifier)).toBe(false);
+  });
+
+  it("a properly signed token verifies successfully", async () => {
+    const identity = new InMemoryIdentityPort("artist-1");
+    const verifier = new InMemorySignatureVerifierPort();
+    const signed = await signToken(makeToken(), identity);
+
+    expect(isTokenSigned(signed)).toBe(true);
+    expect(verifyMetadataTokenSignature(signed, verifier)).toBe(true);
+  });
+
+  it("rejects a tampered token — mutating one signed field invalidates the signature", async () => {
+    const identity = new InMemoryIdentityPort("artist-1");
+    const verifier = new InMemorySignatureVerifierPort();
+    const signed = await signToken(makeToken(), identity);
+
+    const tampered: MetadataToken = { ...signed, title: `${signed.title} (tampered)` };
+    expect(verifyMetadataTokenSignature(tampered, verifier)).toBe(false);
+  });
+
+  it("rejects a tampered contentHash even though the rest of the token is untouched", async () => {
+    const identity = new InMemoryIdentityPort("artist-1");
+    const verifier = new InMemorySignatureVerifierPort();
+    const signed = await signToken(makeToken(), identity);
+
+    const tampered: MetadataToken = { ...signed, contentHash: "b".repeat(64) };
+    expect(verifyMetadataTokenSignature(tampered, verifier)).toBe(false);
+  });
+
+  it("rejects a signature produced by a different identity's key", async () => {
+    const signer = new InMemoryIdentityPort("artist-1");
+    const impostor = new InMemoryIdentityPort("artist-2");
+    const verifier = new InMemorySignatureVerifierPort();
+
+    const signed = await signToken(makeToken(), signer);
+    const impostorKey = hexEncode((await impostor.getCurrentIdentity()).publicKey);
+    const relabelled: MetadataToken = { ...signed, signerPublicKey: impostorKey };
+
+    expect(verifyMetadataTokenSignature(relabelled, verifier)).toBe(false);
+  });
+
+  it("changing the hop count (provenance) does NOT invalidate the signature", async () => {
+    // Provenance is deliberately excluded from the signed payload (see
+    // canonicalizeTokenForSigning's doc comment) so that incrementing hop
+    // count on receipt, at every intermediate holder, never requires
+    // re-signing.
+    const identity = new InMemoryIdentityPort("artist-1");
+    const verifier = new InMemorySignatureVerifierPort();
+    const signed = await signToken(makeToken({ provenance: { hopCount: 0 } }), identity);
+
+    const afterOneHop = incrementHopCount(signed);
+    const afterTwoHops = incrementHopCount(afterOneHop);
+
+    expect(afterTwoHops.provenance.hopCount).toBe(2);
+    expect(verifyMetadataTokenSignature(afterTwoHops, verifier)).toBe(true);
+  });
+
+  it("canonicalizeTokenForSigning excludes signature/signerPublicKey/provenance from what it covers", () => {
+    const base = makeToken({ provenance: { hopCount: 0 } });
+    const withDifferentProvenance: MetadataToken = { ...base, provenance: { hopCount: 5 } };
+    const withDifferentSignature: MetadataToken = { ...base, signature: "ff".repeat(64) };
+
+    expect(canonicalizeTokenForSigning(base)).toEqual(
+      canonicalizeTokenForSigning(withDifferentProvenance),
+    );
+    expect(canonicalizeTokenForSigning(base)).toEqual(
+      canonicalizeTokenForSigning(withDifferentSignature),
+    );
+  });
+});
+
+describe("incrementHopCount — issue #21 provenance lineage", () => {
+  it("increments the hop count by exactly one, leaving every other field untouched", () => {
+    const token = makeToken({ provenance: { hopCount: 3 } });
+    const next = incrementHopCount(token);
+    expect(next.provenance.hopCount).toBe(4);
+    expect({ ...next, provenance: token.provenance }).toEqual(token);
+  });
+
+  it("hop count keeps advancing across repeated hops", () => {
+    let token = makeToken({ provenance: { hopCount: 0 } });
+    for (let i = 0; i < 5; i++) {
+      token = incrementHopCount(token);
+    }
+    expect(token.provenance.hopCount).toBe(5);
+  });
+
+  it("never carries an identified peer/node path — only a count (SPEC.md §7)", () => {
+    const token = incrementHopCount(makeToken({ provenance: { hopCount: 0 } }));
+    // Provenance is structurally incapable of carrying anything but a
+    // number: this is a compile-time guarantee (the `Provenance` interface
+    // has exactly one field), asserted here at the value level too.
+    expect(Object.keys(token.provenance)).toEqual(["hopCount"]);
   });
 });

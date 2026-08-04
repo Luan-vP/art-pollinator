@@ -13,3 +13,4 @@ export * from "./in-memory-blob-store-port.js";
 export * from "./in-memory-identity-port.js";
 export * from "./in-memory-encounter-log-port.js";
 export * from "./in-memory-scheduler-port.js";
+export * from "./in-memory-signature-verifier-port.js";

@@ -3,7 +3,9 @@ import {
   EMPTY_LIBRARY,
   InMemoryClockPort,
   InMemoryEncounterLogPort,
+  InMemoryIdentityPort,
   InMemoryMetadataRepositoryPort,
+  InMemorySignatureVerifierPort,
   MAX_LOCKABLE_SLOTS,
   SWAPPABLE_SLOTS,
   addItem,
@@ -19,6 +21,7 @@ import {
   type MetadataToken,
   type PeerAddress,
 } from "@art-pollinator/core";
+import { signMetadataToken } from "../identity/sign-metadata-token.js";
 import { SwapService } from "./swap-service.js";
 
 function token(contentHash: string): MetadataToken {
@@ -387,5 +390,249 @@ describe("SwapService: item-scoped encounter memory suppresses re-offering acros
 
       expect(hashes(outcomeA.offered)).toEqual(["alpha", "beta", "gamma"]); // un-suppressed
     }
+  });
+});
+
+describe("SwapService: provenance hop count advances across successive hops (issue #21)", () => {
+  it("increments hop count on receipt, and the incremented value is what gets re-offered to a third party", async () => {
+    // Round 1: A (originator, hopCount 0) swaps "piece" to B.
+    const addressA: PeerAddress = { id: "device-a" };
+    const addressB: PeerAddress = { id: "device-b" };
+    const round1 = createInMemoryTransportPair(addressA, addressB);
+
+    const libraryA = buildLibrary([{ hash: "piece" }]); // provenance.hopCount 0, via the `token()` fixture
+    const serviceA = new SwapService({
+      transport: round1.a,
+      metadataRepository: new InMemoryMetadataRepositoryPort(),
+      encounterLog: new InMemoryEncounterLogPort(),
+      clock: new InMemoryClockPort(0),
+      offerPolicy: naiveOfferPolicy,
+      acceptPolicy: naiveAcceptPolicy,
+      evictionPolicy: naiveEvictionPolicy,
+    });
+    const serviceB = new SwapService({
+      transport: round1.b,
+      metadataRepository: new InMemoryMetadataRepositoryPort(),
+      encounterLog: new InMemoryEncounterLogPort(),
+      clock: new InMemoryClockPort(0),
+      offerPolicy: naiveOfferPolicy,
+      acceptPolicy: naiveAcceptPolicy,
+      evictionPolicy: naiveEvictionPolicy,
+    });
+
+    const [, outcomeB] = await Promise.all([
+      serviceA.swap({ address: addressB, kind: "person" }, libraryA),
+      serviceB.swap({ address: addressA, kind: "person" }, EMPTY_LIBRARY),
+    ]);
+
+    // B received the piece with hop count incremented from 0 to 1 — B did
+    // not author it, it travelled one hop to reach B.
+    expect(outcomeB.accepted).toHaveLength(1);
+    expect(outcomeB.accepted[0]?.provenance.hopCount).toBe(1);
+    expect(outcomeB.library.entries.get("piece")?.token.provenance.hopCount).toBe(1);
+
+    // Round 2: B re-offers its (now hop-count-1) library on to C.
+    const addressC: PeerAddress = { id: "device-c" };
+    const round2 = createInMemoryTransportPair(addressB, addressC);
+    const serviceB2 = new SwapService({
+      transport: round2.a,
+      metadataRepository: new InMemoryMetadataRepositoryPort(),
+      encounterLog: new InMemoryEncounterLogPort(),
+      clock: new InMemoryClockPort(0),
+      offerPolicy: naiveOfferPolicy,
+      acceptPolicy: naiveAcceptPolicy,
+      evictionPolicy: naiveEvictionPolicy,
+    });
+    const serviceC = new SwapService({
+      transport: round2.b,
+      metadataRepository: new InMemoryMetadataRepositoryPort(),
+      encounterLog: new InMemoryEncounterLogPort(),
+      clock: new InMemoryClockPort(0),
+      offerPolicy: naiveOfferPolicy,
+      acceptPolicy: naiveAcceptPolicy,
+      evictionPolicy: naiveEvictionPolicy,
+    });
+
+    const [outcomeBAgain, outcomeC] = await Promise.all([
+      serviceB2.swap({ address: addressC, kind: "person" }, outcomeB.library),
+      serviceC.swap({ address: addressB, kind: "person" }, EMPTY_LIBRARY),
+    ]);
+
+    // B offered the piece it already holds at hop count 1 — offering does
+    // not itself increment hop count, only receiving does.
+    expect(outcomeBAgain.offered[0]?.provenance.hopCount).toBe(1);
+
+    // C received it and incremented it again: 1 -> 2. The token has now
+    // demonstrably passed through two hops since its origin, and nothing
+    // anywhere in this chain ever recorded *which* devices it passed
+    // through — only the count (docs/adr/0007-provenance-hop-count-only.md).
+    expect(outcomeC.accepted[0]?.provenance.hopCount).toBe(2);
+    expect(outcomeC.library.entries.get("piece")?.token.provenance.hopCount).toBe(2);
+  });
+});
+
+describe("SwapService: signature verification (issue #58)", () => {
+  function signedToken(
+    identity: InMemoryIdentityPort,
+    contentHash: string,
+  ): Promise<MetadataToken> {
+    return signMetadataToken(token(contentHash), identity);
+  }
+
+  it("accepts a properly signed token when a signatureVerifier is configured", async () => {
+    const addressA: PeerAddress = { id: "device-a" };
+    const addressB: PeerAddress = { id: "device-b" };
+    const { a: transportA, b: transportB } = createInMemoryTransportPair(addressA, addressB);
+
+    const artist = new InMemoryIdentityPort("artist-1");
+    const signed = await signedToken(artist, "signed-piece");
+    let libraryA = EMPTY_LIBRARY;
+    const added = addItem(libraryA, signed, toPriority(0));
+    if (!added.ok) throw new Error(added.error);
+    libraryA = added.library;
+
+    const serviceA = new SwapService({
+      transport: transportA,
+      metadataRepository: new InMemoryMetadataRepositoryPort(),
+      encounterLog: new InMemoryEncounterLogPort(),
+      clock: new InMemoryClockPort(0),
+      offerPolicy: naiveOfferPolicy,
+      acceptPolicy: naiveAcceptPolicy,
+      evictionPolicy: naiveEvictionPolicy,
+    });
+    const serviceB = new SwapService({
+      transport: transportB,
+      metadataRepository: new InMemoryMetadataRepositoryPort(),
+      encounterLog: new InMemoryEncounterLogPort(),
+      clock: new InMemoryClockPort(0),
+      offerPolicy: naiveOfferPolicy,
+      acceptPolicy: naiveAcceptPolicy,
+      evictionPolicy: naiveEvictionPolicy,
+      signatureVerifier: new InMemorySignatureVerifierPort(),
+    });
+
+    const [, outcomeB] = await Promise.all([
+      serviceA.swap({ address: addressB, kind: "person" }, libraryA),
+      serviceB.swap({ address: addressA, kind: "person" }, EMPTY_LIBRARY),
+    ]);
+
+    expect(hashes(outcomeB.accepted)).toEqual(["signed-piece"]);
+    expect(outcomeB.rejectedUnverified).toEqual([]);
+  });
+
+  it("rejects an unsigned token when a signatureVerifier is configured, without evicting or erroring", async () => {
+    const addressA: PeerAddress = { id: "device-a" };
+    const addressB: PeerAddress = { id: "device-b" };
+    const { a: transportA, b: transportB } = createInMemoryTransportPair(addressA, addressB);
+
+    // Plain `token()` fixture: signature "" and no signerPublicKey — unsigned.
+    const libraryA = buildLibrary([{ hash: "unsigned-piece" }]);
+
+    const serviceA = new SwapService({
+      transport: transportA,
+      metadataRepository: new InMemoryMetadataRepositoryPort(),
+      encounterLog: new InMemoryEncounterLogPort(),
+      clock: new InMemoryClockPort(0),
+      offerPolicy: naiveOfferPolicy,
+      acceptPolicy: naiveAcceptPolicy,
+      evictionPolicy: naiveEvictionPolicy,
+    });
+    const serviceB = new SwapService({
+      transport: transportB,
+      metadataRepository: new InMemoryMetadataRepositoryPort(),
+      encounterLog: new InMemoryEncounterLogPort(),
+      clock: new InMemoryClockPort(0),
+      offerPolicy: naiveOfferPolicy,
+      acceptPolicy: naiveAcceptPolicy,
+      evictionPolicy: naiveEvictionPolicy,
+      signatureVerifier: new InMemorySignatureVerifierPort(),
+    });
+
+    const [, outcomeB] = await Promise.all([
+      serviceA.swap({ address: addressB, kind: "person" }, libraryA),
+      serviceB.swap({ address: addressA, kind: "person" }, EMPTY_LIBRARY),
+    ]);
+
+    expect(outcomeB.accepted).toEqual([]);
+    expect(hashes(outcomeB.rejectedUnverified)).toEqual(["unsigned-piece"]);
+  });
+
+  it("rejects a tampered token (signed, then mutated in transit) when a signatureVerifier is configured", async () => {
+    const addressA: PeerAddress = { id: "device-a" };
+    const addressB: PeerAddress = { id: "device-b" };
+    const { a: transportA, b: transportB } = createInMemoryTransportPair(addressA, addressB);
+
+    const artist = new InMemoryIdentityPort("artist-1");
+    const signed = await signedToken(artist, "tampered-piece");
+    // Simulate tampering in transit: mutate a signed field after signing.
+    const tampered: MetadataToken = { ...signed, title: `${signed.title} (forged edit)` };
+    let libraryA = EMPTY_LIBRARY;
+    const added = addItem(libraryA, tampered, toPriority(0));
+    if (!added.ok) throw new Error(added.error);
+    libraryA = added.library;
+
+    const serviceA = new SwapService({
+      transport: transportA,
+      metadataRepository: new InMemoryMetadataRepositoryPort(),
+      encounterLog: new InMemoryEncounterLogPort(),
+      clock: new InMemoryClockPort(0),
+      offerPolicy: naiveOfferPolicy,
+      acceptPolicy: naiveAcceptPolicy,
+      evictionPolicy: naiveEvictionPolicy,
+    });
+    const serviceB = new SwapService({
+      transport: transportB,
+      metadataRepository: new InMemoryMetadataRepositoryPort(),
+      encounterLog: new InMemoryEncounterLogPort(),
+      clock: new InMemoryClockPort(0),
+      offerPolicy: naiveOfferPolicy,
+      acceptPolicy: naiveAcceptPolicy,
+      evictionPolicy: naiveEvictionPolicy,
+      signatureVerifier: new InMemorySignatureVerifierPort(),
+    });
+
+    const [, outcomeB] = await Promise.all([
+      serviceA.swap({ address: addressB, kind: "person" }, libraryA),
+      serviceB.swap({ address: addressA, kind: "person" }, EMPTY_LIBRARY),
+    ]);
+
+    expect(outcomeB.accepted).toEqual([]);
+    expect(hashes(outcomeB.rejectedUnverified)).toEqual(["tampered-piece"]);
+  });
+
+  it("skips verification entirely (accepts unsigned tokens) when no signatureVerifier is configured — backward compatible default", async () => {
+    const addressA: PeerAddress = { id: "device-a" };
+    const addressB: PeerAddress = { id: "device-b" };
+    const { a: transportA, b: transportB } = createInMemoryTransportPair(addressA, addressB);
+
+    const libraryA = buildLibrary([{ hash: "unsigned-piece" }]);
+
+    const serviceA = new SwapService({
+      transport: transportA,
+      metadataRepository: new InMemoryMetadataRepositoryPort(),
+      encounterLog: new InMemoryEncounterLogPort(),
+      clock: new InMemoryClockPort(0),
+      offerPolicy: naiveOfferPolicy,
+      acceptPolicy: naiveAcceptPolicy,
+      evictionPolicy: naiveEvictionPolicy,
+    });
+    const serviceB = new SwapService({
+      transport: transportB,
+      metadataRepository: new InMemoryMetadataRepositoryPort(),
+      encounterLog: new InMemoryEncounterLogPort(),
+      clock: new InMemoryClockPort(0),
+      offerPolicy: naiveOfferPolicy,
+      acceptPolicy: naiveAcceptPolicy,
+      evictionPolicy: naiveEvictionPolicy,
+      // no signatureVerifier configured
+    });
+
+    const [, outcomeB] = await Promise.all([
+      serviceA.swap({ address: addressB, kind: "person" }, libraryA),
+      serviceB.swap({ address: addressA, kind: "person" }, EMPTY_LIBRARY),
+    ]);
+
+    expect(hashes(outcomeB.accepted)).toEqual(["unsigned-piece"]);
+    expect(outcomeB.rejectedUnverified).toEqual([]);
   });
 });
