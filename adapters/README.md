@@ -1,11 +1,14 @@
 # adapters/
 
-Placeholder directory. No adapter packages exist yet.
+One npm package per port implementation. Landed so far:
 
-This directory will hold one npm package per port implementation — e.g.
-`adapters/ble-transport`, `adapters/sqlite-metadata-repository`,
-`adapters/local-fs-blob-store` — as Phase 1a/1b lands (IMPLEMENTATION.md
-items 25, 33-34, 40).
+- `identity-node` — `IdentityPort` / `SignatureVerifierPort` for a Node
+  environment (issues #57/#58).
+- `metadata-repository-sqlite` — `MetadataRepositoryPort` backed by SQLite,
+  with versioned startup migrations (issues #25/#26/#27).
+
+More will land per port as Phase 1a/1b continues (IMPLEMENTATION.md items
+33-34, 40) — e.g. `adapters/ble-transport`, `adapters/local-fs-blob-store`.
 
 Rules each adapter package must follow (AGENTS.md §2, §4):
 
