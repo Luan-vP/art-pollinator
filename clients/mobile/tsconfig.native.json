@@ -1,0 +1,15 @@
+// Same as tsconfig.json but resolves the NATIVE (iOS/Android) side of any
+// composition-root.web.ts / composition-root.native.ts split, by trying the
+// ".native" suffix before ".web". `npm run typecheck` in this package runs
+// both configs so neither platform's composition root goes unchecked.
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": ["../../tsconfig.base.json", "expo/tsconfig.base"],
+  "compilerOptions": {
+    "rootDir": ".",
+    "moduleSuffixes": ["", ".native", ".web"],
+    "types": ["react"]
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "index.ts"],
+  "exclude": ["dist", "node_modules", ".expo", "ios", "android"]
+}

@@ -1,0 +1,23 @@
+// Extends both the monorepo's shared strict baseline (tsconfig.base.json)
+// and Expo's own base config. `extends` is applied in order — expo's config
+// comes last so its RN-specific settings (jsx, module: preserve, lib:
+// DOM+ESNext, moduleResolution: bundler) win, while our stricter flags
+// (noUncheckedIndexedAccess, exactOptionalPropertyTypes, noImplicitOverride,
+// etc.) still apply since expo/tsconfig.base does not redefine them.
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": ["../../tsconfig.base.json", "expo/tsconfig.base"],
+  "compilerOptions": {
+    "rootDir": ".",
+    // Simulates Metro's per-platform module resolution
+    // (composition-root.web.ts / composition-root.native.ts, issue #30)
+    // during a plain `tsc` run, which has no native concept of RN platform
+    // extensions. This order ("", ".web", ".native") checks the WEB
+    // resolution path — see tsconfig.native.json for the native path. Both
+    // must pass; `npm run typecheck` in this package runs both.
+    "moduleSuffixes": ["", ".web", ".native"],
+    "types": ["react"]
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "index.ts"],
+  "exclude": ["dist", "node_modules", ".expo", "ios", "android"]
+}
