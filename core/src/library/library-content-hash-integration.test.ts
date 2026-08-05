@@ -25,7 +25,7 @@ function tokenForRealContent(title: string, pieceBytes: Uint8Array): MetadataTok
     description: "A piece worth passing on.",
     provenance: { hopCount: 0 },
     contentType: "image/jpeg",
-    blobPointer: { contentHash },
+    blobPointer: { scheme: "local-filesystem", contentHash },
     contentHash,
     signature: "",
   };

@@ -60,7 +60,7 @@ const defaultMakeToken = (contentHash: string): MetadataToken => ({
   description: "A piece.",
   provenance: { hopCount: 0 },
   contentType: "image/jpeg",
-  blobPointer: { contentHash },
+  blobPointer: { scheme: "local-filesystem", contentHash },
   contentHash,
   signature: "",
 });
@@ -73,7 +73,7 @@ function signedToken(contentHash: string): MetadataToken {
     description: "A signed piece.",
     provenance: { hopCount: 2 },
     contentType: "text/plain",
-    blobPointer: { contentHash },
+    blobPointer: { scheme: "local-filesystem", contentHash },
     contentHash,
     signature: "aa".repeat(64), // 128 hex chars — a plausible Ed25519 signature shape
     signerPublicKey: "bb".repeat(32), // 64 hex chars — a plausible Ed25519 public key shape
