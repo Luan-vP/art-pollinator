@@ -1,0 +1,17 @@
+{
+  "name": "@art-pollinator/seed-placeholder-dev",
+  "version": "0.0.0",
+  "description": "Dev-only placeholder MetadataToken seed data and its off-by-default gating predicate (issue #42). Hard boundary: AGENTS.md §3 — scraped third-party artwork must never reach a shipped build. Deletable without touching core.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@art-pollinator/core": "*"
+  }
+}
