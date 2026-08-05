@@ -41,11 +41,19 @@ export interface AcceptPolicy {
  * much real room is left, since adding it back would not actually consume a
  * slot. Also skips a content hash repeated *within* `offered` itself — a
  * peer offering the same item twice must not consume two capacity slots.
+ *
+ * `swappableSlots` defaults to the phone's fixed {@link SWAPPABLE_SLOTS}
+ * (AGENTS.md §6) — pass a larger value for a node with a larger configured
+ * `Library` capacity (see
+ * `docs/adr/0012-node-library-capacity-generalization.md`) so this policy's
+ * notion of "remaining capacity" agrees with what `Library.addItem` will
+ * actually accept, rather than silently capping every node at 5 regardless
+ * of its real configured size.
  */
-export function createNaiveAcceptPolicy(): AcceptPolicy {
+export function createNaiveAcceptPolicy(swappableSlots: number = SWAPPABLE_SLOTS): AcceptPolicy {
   return {
     selectAccept(offered: readonly Item[], library: Library): Item[] {
-      const remainingCapacity = Math.max(0, SWAPPABLE_SLOTS - swappableCount(library));
+      const remainingCapacity = Math.max(0, swappableSlots - swappableCount(library));
       const accepted: Item[] = [];
       const acceptedHashes = new Set<string>();
 

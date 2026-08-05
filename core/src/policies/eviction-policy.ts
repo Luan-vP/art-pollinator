@@ -33,8 +33,17 @@ export interface EvictionPolicy {
  * locked item being simultaneously the lowest-priority item in the whole
  * library cannot put it up for eviction (AGENTS.md §6, issue #14's explicit
  * acceptance criterion).
+ *
+ * `swappableSlots` defaults to the phone's fixed {@link SWAPPABLE_SLOTS}
+ * (AGENTS.md §6) — pass a larger value for a node with a larger configured
+ * `Library` capacity (see
+ * `docs/adr/0012-node-library-capacity-generalization.md`) so this policy
+ * only evicts to make room against the node's *actual* configured size,
+ * not the phone's.
  */
-export function createNaiveEvictionPolicy(): EvictionPolicy {
+export function createNaiveEvictionPolicy(
+  swappableSlots: number = SWAPPABLE_SLOTS,
+): EvictionPolicy {
   return {
     selectEvict(library: Library, incoming: readonly Item[]): Item[] {
       const swappableEntries: LibraryEntry[] = [];
@@ -43,7 +52,7 @@ export function createNaiveEvictionPolicy(): EvictionPolicy {
         swappableEntries.push(entry);
       }
 
-      const neededSlots = swappableEntries.length + incoming.length - SWAPPABLE_SLOTS;
+      const neededSlots = swappableEntries.length + incoming.length - swappableSlots;
       if (neededSlots <= 0) {
         return [];
       }
