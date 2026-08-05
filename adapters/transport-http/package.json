@@ -1,0 +1,23 @@
+{
+  "name": "@art-pollinator/transport-http",
+  "version": "0.0.0",
+  "description": "TransportPort implementation over HTTP (issue #43, pulled forward from Phase 2): HttpTransportServer (the side that listens — realistically a stationary Wi-Fi node, Phase 2) and HttpTransportClient (the side that dials out — usable from clients/mobile, including the web build, since it only ever uses fetch). Carries the real wire-protocol messages from @art-pollinator/core's protocol/* unchanged.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@art-pollinator/core": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5"
+  }
+}
