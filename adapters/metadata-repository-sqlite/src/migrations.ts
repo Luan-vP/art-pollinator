@@ -40,6 +40,17 @@
  *   && signerPublicKey !== ""`) so `SqliteMetadataRepository` never has to
  *   special-case `NULL` vs `''` when reading a row back. This is a genuine
  *   data transform, not just a DDL change — existing rows are rewritten.
+ * - **v4** — adds `blob_pointer_scheme` and `blob_pointer_bucket_ref`
+ *   columns (issue #39: `BlobPointer` grew from a single-field placeholder
+ *   into a resolvable-anywhere discriminated union —
+ *   `metadata-token.ts`'s doc comment predicted exactly this: "when that
+ *   type grows, the migration that adds columns/tables for it is the
+ *   correct place to revisit this"). Existing rows backfill
+ *   `blob_pointer_scheme = 'local-filesystem'` (every row written before
+ *   this migration was, by construction, a `local-filesystem` pointer —
+ *   `bucket` did not exist yet); `blob_pointer_bucket_ref` stays `NULL` for
+ *   all of them (only meaningful for the `bucket` scheme, which has no real
+ *   resolver in this phase — see `BlobPointer`'s doc comment).
  *
  * `CURRENT_SCHEMA_VERSION` is always the highest `version` in
  * `MIGRATIONS`; a database at that version is up to date and
@@ -55,6 +66,11 @@
  * three-version history:
  *
  * ```sql
+ * -- Downgrade v4 -> v3: drop the columns v4 added.
+ * ALTER TABLE metadata_tokens DROP COLUMN blob_pointer_scheme;
+ * ALTER TABLE metadata_tokens DROP COLUMN blob_pointer_bucket_ref;
+ * PRAGMA user_version = 3;
+ *
  * -- Downgrade v3 -> v2: no schema change to undo (v3 only rewrote data,
  * -- it added no column). '' and NULL are equivalent under the "absent
  * -- signer" convention, so simply set the version back:
@@ -115,6 +131,18 @@ const MIGRATIONS: readonly Migration[] = [
     description: "backfill signer_public_key: NULL -> '' (absent-signer convention)",
     up: (db) => {
       db.exec(`UPDATE metadata_tokens SET signer_public_key = '' WHERE signer_public_key IS NULL`);
+    },
+  },
+  {
+    version: 4,
+    description:
+      "add blob_pointer_scheme and blob_pointer_bucket_ref columns (issue #39 resolvable-anywhere BlobPointer)",
+    up: (db) => {
+      db.exec(`ALTER TABLE metadata_tokens ADD COLUMN blob_pointer_scheme TEXT`);
+      db.exec(`ALTER TABLE metadata_tokens ADD COLUMN blob_pointer_bucket_ref TEXT`);
+      db.exec(
+        `UPDATE metadata_tokens SET blob_pointer_scheme = 'local-filesystem' WHERE blob_pointer_scheme IS NULL`,
+      );
     },
   },
 ];
