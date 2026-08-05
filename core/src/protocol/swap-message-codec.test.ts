@@ -27,7 +27,7 @@ function makeToken(overrides: Partial<MetadataToken> = {}): MetadataToken {
     description: fillerText(200),
     provenance: { hopCount: 2 },
     contentType: "image/jpeg",
-    blobPointer: { contentHash: "a".repeat(64) },
+    blobPointer: { scheme: "local-filesystem", contentHash: "a".repeat(64) },
     contentHash: "a".repeat(64),
     signature: "",
     ...overrides,

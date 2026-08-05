@@ -11,6 +11,12 @@ import {
   createSharedBleManager,
 } from "../ble/real-ble-scan-and-central-library";
 import { createRealBleAdvertiseLibrary } from "../ble/real-ble-advertise-library";
+import {
+  buildSharedServices,
+  buildSwapService,
+  maybeSeedPlaceholderLibrary,
+  wireAutomaticSwap,
+} from "./composition-root-shared";
 
 /**
  * Composition root for the native (iOS/Android) build. Metro resolves this
@@ -48,22 +54,39 @@ import { createRealBleAdvertiseLibrary } from "../ble/real-ble-advertise-library
  * scope, not this composition root's (this file only constructs and
  * exposes the adapters — see `types.ts`'s `CompositionRootPorts` doc
  * comment on why every field here is a single instance, not a router).
+ *
+ * `services` (issue #37/#38): `SwapService` is constructed here against the
+ * real `BleTransportAdapter` above (not left unconnected — see
+ * `composition-root-shared.ts`'s `buildSwapService` doc comment), automatic
+ * swapping is wired to this platform's real `BleDiscoveryAdapter`, and the
+ * placeholder seed (issue #42) is applied if — and only if — this build's
+ * dev flag is on (off by default; see `composition-root-shared.ts`'s
+ * `placeholderSeedGateInputs`).
  */
 export function createCompositionRoot(): CompositionRoot {
   const bleManager = createSharedBleManager();
+  const transport = new BleTransportAdapter({ central: createRealBleCentralLibrary(bleManager) });
+  const discovery = new BleDiscoveryAdapter({
+    selfKind: "person",
+    scanner: createRealBleScanLibrary(bleManager),
+    advertiser: createRealBleAdvertiseLibrary(),
+  });
+
+  const shared = buildSharedServices();
+  const swapService = buildSwapService(transport, shared);
+  maybeSeedPlaceholderLibrary(shared.libraryService);
+  wireAutomaticSwap(discovery, swapService, shared.libraryService);
 
   return {
     capabilities: {
       ble: true,
       wifiNodeSwap: true,
     },
-    ports: {
-      transport: new BleTransportAdapter({ central: createRealBleCentralLibrary(bleManager) }),
-      discovery: new BleDiscoveryAdapter({
-        selfKind: "person",
-        scanner: createRealBleScanLibrary(bleManager),
-        advertiser: createRealBleAdvertiseLibrary(),
-      }),
+    ports: { transport, discovery },
+    services: {
+      swapService,
+      libraryService: shared.libraryService,
+      swapActivityLog: shared.swapActivityLog,
     },
   };
 }

@@ -75,7 +75,7 @@ const defaultMakeToken = (contentHash: string): MetadataToken => ({
   description: "A piece.",
   provenance: { hopCount: 0 },
   contentType: "image/jpeg",
-  blobPointer: { contentHash },
+  blobPointer: { scheme: "local-filesystem", contentHash },
   contentHash,
   signature: "",
 });

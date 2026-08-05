@@ -16,6 +16,11 @@
  * hashing and signing (`./crypto/*`, #23/#58 — see
  * `docs/adr/0008-crypto-primitives-in-a-zero-dependency-core.md`), and the
  * transport-agnostic swap protocol schema and codec (#22/#24, `./protocol/*`).
+ * This batch (Phase 1b, #39/#40/#41): `BlobPointer` became a
+ * resolvable-anywhere discriminated union (#39, `./metadata/metadata-token.js`),
+ * the `BlobStorePort` contract suite (#40), and two new ports for the
+ * deferred blob queue (#41) — `NetworkStatusPort` and
+ * `BlobFetchQueueStorePort`, each with an in-memory fake.
  */
 export * from "./constants.js";
 export * from "./priority/priority.js";
@@ -38,3 +43,4 @@ export * from "./crypto/canonical-json.js";
 export * from "./protocol/swap-message.js";
 export * from "./protocol/swap-message-codec.js";
 export * from "./ports/transport-port-contract-suite.js";
+export * from "./ports/blob-store-contract-suite.js";

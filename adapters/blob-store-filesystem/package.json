@@ -1,0 +1,23 @@
+{
+  "name": "@art-pollinator/blob-store-filesystem",
+  "version": "0.0.0",
+  "description": "FilesystemBlobStorePort — a BlobStorePort implementation backed by the local filesystem (issue #40), content-addressed by the same SHA-256 core already uses for MetadataToken content hashes. Verifies integrity on fetch and rejects a mismatch. Also ships a JSON-file-backed BlobFetchQueueStorePort for the deferred blob queue (issue #41).",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@art-pollinator/core": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5"
+  }
+}

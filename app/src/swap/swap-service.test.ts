@@ -22,6 +22,7 @@ import {
   type PeerAddress,
 } from "@art-pollinator/core";
 import { signMetadataToken } from "../identity/sign-metadata-token.js";
+import { SwapActivityLog } from "./swap-activity-log.js";
 import { SwapService } from "./swap-service.js";
 
 function token(contentHash: string): MetadataToken {
@@ -31,7 +32,7 @@ function token(contentHash: string): MetadataToken {
     description: "A piece worth passing on.",
     provenance: { hopCount: 0 },
     contentType: "image/jpeg",
-    blobPointer: { contentHash },
+    blobPointer: { scheme: "local-filesystem", contentHash },
     contentHash,
     signature: "",
   };
@@ -634,5 +635,81 @@ describe("SwapService: signature verification (issue #58)", () => {
 
     expect(hashes(outcomeB.accepted)).toEqual(["unsigned-piece"]);
     expect(outcomeB.rejectedUnverified).toEqual([]);
+  });
+});
+
+describe("SwapService: activity log (issue #38)", () => {
+  it("records the exact SwapOutcome to activityLog when one is configured", async () => {
+    const addressA: PeerAddress = { id: "device-a" };
+    const addressB: PeerAddress = { id: "device-b" };
+    const { a: transportA, b: transportB } = createInMemoryTransportPair(addressA, addressB);
+
+    const libraryA = buildLibrary([{ hash: "alpha" }]);
+    const activityLogA = new SwapActivityLog();
+
+    const serviceA = new SwapService({
+      transport: transportA,
+      metadataRepository: new InMemoryMetadataRepositoryPort(),
+      encounterLog: new InMemoryEncounterLogPort(),
+      clock: new InMemoryClockPort(0),
+      offerPolicy: naiveOfferPolicy,
+      acceptPolicy: naiveAcceptPolicy,
+      evictionPolicy: naiveEvictionPolicy,
+      activityLog: activityLogA,
+    });
+    const serviceB = new SwapService({
+      transport: transportB,
+      metadataRepository: new InMemoryMetadataRepositoryPort(),
+      encounterLog: new InMemoryEncounterLogPort(),
+      clock: new InMemoryClockPort(0),
+      offerPolicy: naiveOfferPolicy,
+      acceptPolicy: naiveAcceptPolicy,
+      evictionPolicy: naiveEvictionPolicy,
+    });
+
+    expect(activityLogA.history()).toEqual([]);
+
+    const [outcomeA] = await Promise.all([
+      serviceA.swap({ address: addressB, kind: "person" }, libraryA),
+      serviceB.swap({ address: addressA, kind: "person" }, EMPTY_LIBRARY),
+    ]);
+
+    expect(activityLogA.history()).toEqual([outcomeA]);
+  });
+
+  it("a subscriber is notified live, as the swap completes", async () => {
+    const addressA: PeerAddress = { id: "device-a" };
+    const addressB: PeerAddress = { id: "device-b" };
+    const { a: transportA, b: transportB } = createInMemoryTransportPair(addressA, addressB);
+    const activityLogA = new SwapActivityLog();
+    const received: unknown[] = [];
+    activityLogA.subscribe((outcome) => received.push(outcome));
+
+    const serviceA = new SwapService({
+      transport: transportA,
+      metadataRepository: new InMemoryMetadataRepositoryPort(),
+      encounterLog: new InMemoryEncounterLogPort(),
+      clock: new InMemoryClockPort(0),
+      offerPolicy: naiveOfferPolicy,
+      acceptPolicy: naiveAcceptPolicy,
+      evictionPolicy: naiveEvictionPolicy,
+      activityLog: activityLogA,
+    });
+    const serviceB = new SwapService({
+      transport: transportB,
+      metadataRepository: new InMemoryMetadataRepositoryPort(),
+      encounterLog: new InMemoryEncounterLogPort(),
+      clock: new InMemoryClockPort(0),
+      offerPolicy: naiveOfferPolicy,
+      acceptPolicy: naiveAcceptPolicy,
+      evictionPolicy: naiveEvictionPolicy,
+    });
+
+    await Promise.all([
+      serviceA.swap({ address: addressB, kind: "person" }, EMPTY_LIBRARY),
+      serviceB.swap({ address: addressA, kind: "person" }, EMPTY_LIBRARY),
+    ]);
+
+    expect(received.length).toBe(1);
   });
 });

@@ -14,7 +14,7 @@ const item: MetadataToken = {
   description: "A piece.",
   provenance: { hopCount: 0 },
   contentType: "image/jpeg",
-  blobPointer: { contentHash: "a".repeat(64) },
+  blobPointer: { scheme: "local-filesystem", contentHash: "a".repeat(64) },
   contentHash: "a".repeat(64),
   signature: "",
 };

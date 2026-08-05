@@ -54,18 +54,74 @@ export function incrementHopCount(token: MetadataToken): MetadataToken {
 }
 
 /**
- * Placeholder blob pointer.
+ * BlobPointer — resolvable-anywhere blob reference (issue #39,
+ * IMPLEMENTATION.md Phase 1b item 39).
  *
- * The real "resolvable-anywhere" blob pointer design is issue #39 (a later
- * batch). SPEC.md §3.2 requires blobs to be addressed by content hash
- * regardless of storage backend (local filesystem now, cloud buckets
- * later), so this stub carries only the one thing guaranteed stable across
- * every backend — the content hash — and deliberately avoids embedding any
- * filesystem-path or URL assumption that a later backend would force a
- * rewrite of.
+ * AGENTS.md §7 ("Traps specific to this codebase"): "Blob pointers must be
+ * resolvable-anywhere. Phase 1 resolves locally, but a pointer type that
+ * assumes filesystem paths will need rewriting when buckets arrive. Design
+ * for both now." A bare filesystem path (or URL) bakes in one storage
+ * backend's addressing scheme; a discriminated union keyed on `scheme`
+ * instead lets a `BlobStorePort` implementation (or a future
+ * scheme-dispatching resolver) branch on *how* to resolve a blob without
+ * `core` ever assuming which backend is in play.
+ *
+ * **`contentHash` is universal across every scheme** — SPEC.md §3.2: "Blobs
+ * are always addressed by content hash, regardless of storage location,"
+ * a resolved decision (SPEC.md §12) required for dedup. Every variant below
+ * carries it, so any code that only needs the identity of a blob (not where
+ * to fetch it from) can read `blobPointer.contentHash` without a
+ * scheme-based branch. In practice this is the same value as
+ * `MetadataToken.contentHash` (the whole piece, per SPEC.md's model, is one
+ * hashed blob referenced by its own token) — kept as a separate field on
+ * `BlobPointer` anyway, rather than collapsed into a single token-level
+ * field, so `BlobPointer` stays independently meaningful if `core` ever
+ * needs to hand a bare pointer to a `BlobStorePort` call without the rest of
+ * the token alongside it (e.g. the deferred blob queue, issue #41).
+ *
+ * ## Schemes
+ *
+ * - **`"local-filesystem"`** — the only scheme with a real resolver in
+ *   Phase 1 (`adapters/blob-store-filesystem`'s `FilesystemBlobStorePort`,
+ *   issue #40). SPEC.md §3.2: "Phase 1 stores blobs on the local filesystem
+ *   only."
+ * - **`"bucket"`** — a documented **future** variant for a cloud bucket
+ *   (central- or user-managed, SPEC.md §3.2). Carries `bucketRef` (an
+ *   opaque, backend-defined locator — e.g. a bucket name + object key, or a
+ *   signed-URL template; deliberately unopinionated about that shape here,
+ *   since no bucket backend exists yet to constrain it) in addition to
+ *   `contentHash`. **No resolver implements this scheme yet** — it exists
+ *   purely so the type does not foreclose it; a `BlobStorePort` adapter
+ *   backing this scheme is out of scope for Phase 1 (SPEC.md §3.2, §9).
+ *
+ * Adding a scheme is additive (a new union member), never a breaking change
+ * to `"local-filesystem"` pointers already in circulation or persisted
+ * (e.g. `adapters/metadata-repository-sqlite`'s flattened columns) — this
+ * is exactly the "resolvable-anywhere" property the issue asks for.
  */
-export interface BlobPointer {
+export interface LocalFilesystemBlobPointer {
+  readonly scheme: "local-filesystem";
   readonly contentHash: string;
+}
+
+/**
+ * A future cloud-bucket blob pointer. **Not implemented** — no
+ * `BlobStorePort` adapter resolves this scheme in Phase 1 (see
+ * {@link BlobPointer}'s doc comment). Included now purely so the type is
+ * not foreclosed against it later.
+ */
+export interface BucketBlobPointer {
+  readonly scheme: "bucket";
+  readonly contentHash: string;
+  /** Opaque, backend-defined locator within the bucket (e.g. bucket name + object key). Unimplemented — shape may still change once a real bucket adapter exists. */
+  readonly bucketRef: string;
+}
+
+export type BlobPointer = LocalFilesystemBlobPointer | BucketBlobPointer;
+
+/** Construct a `"local-filesystem"` {@link BlobPointer} — the only scheme with a real resolver in Phase 1. */
+export function localFilesystemBlobPointer(contentHash: string): LocalFilesystemBlobPointer {
+  return { scheme: "local-filesystem", contentHash };
 }
 
 /**

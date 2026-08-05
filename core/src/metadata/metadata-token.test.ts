@@ -33,7 +33,7 @@ function makeToken(overrides: Partial<MetadataToken> = {}): MetadataToken {
     description: fillerText(200),
     provenance: { hopCount: 2 },
     contentType: "image/jpeg",
-    blobPointer: { contentHash: "a".repeat(64) },
+    blobPointer: { scheme: "local-filesystem", contentHash: "a".repeat(64) },
     contentHash: "a".repeat(64),
     signature: "",
     ...overrides,
@@ -57,7 +57,7 @@ describe("MetadataToken shape", () => {
       description: expect.any(String),
       provenance: { hopCount: expect.any(Number) },
       contentType: expect.any(String),
-      blobPointer: { contentHash: expect.any(String) },
+      blobPointer: { scheme: "local-filesystem", contentHash: expect.any(String) },
       contentHash: expect.any(String),
       signature: expect.any(String),
     });

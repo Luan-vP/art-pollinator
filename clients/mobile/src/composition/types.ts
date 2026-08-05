@@ -10,6 +10,7 @@
  * (`clients/`) where platform-specific code is expected to live.
  */
 import type { DiscoveryPort, TransportPort } from "@art-pollinator/core";
+import type { LibraryService, SwapActivityLog, SwapService } from "@art-pollinator/app";
 
 /**
  * What this platform build can do, decided once here and threaded down to
@@ -52,7 +53,27 @@ export interface CompositionRootPorts {
   readonly discovery?: DiscoveryPort;
 }
 
+/**
+ * The `app/`-layer use cases this composition root wires up and actually
+ * instantiates (issue #37's own DoD check: is `SwapService` "instantiated
+ * somewhere in the composition root with the real adapters wired in as its
+ * dependencies," not just constructible in principle?). Unlike
+ * {@link CompositionRootPorts}, every field here is required — both
+ * platforms register a real transport+discovery pair (BLE for native,
+ * HTTP/LAN for web; see each `composition-root.*.ts`), so both can always
+ * build a real `SwapService`.
+ */
+export interface CompositionRootServices {
+  /** Orchestrates negotiate -> transfer -> reconcile against this platform's real transport/discovery adapters (issue #37). */
+  readonly swapService: SwapService;
+  /** Holds this device's current `Library` snapshot; issue #38's library screen reads and mutates through this. */
+  readonly libraryService: LibraryService;
+  /** Issue #38's swap screen subscribes to this for live incoming-swap activity. */
+  readonly swapActivityLog: SwapActivityLog;
+}
+
 export interface CompositionRoot {
   readonly capabilities: ClientCapabilities;
   readonly ports: CompositionRootPorts;
+  readonly services: CompositionRootServices;
 }

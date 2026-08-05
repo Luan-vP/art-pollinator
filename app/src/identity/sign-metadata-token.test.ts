@@ -15,7 +15,7 @@ function token(overrides: Partial<MetadataToken> = {}): MetadataToken {
     description: "A piece worth passing on.",
     provenance: { hopCount: 0 },
     contentType: "image/jpeg",
-    blobPointer: { contentHash: "a".repeat(64) },
+    blobPointer: { scheme: "local-filesystem", contentHash: "a".repeat(64) },
     contentHash: "a".repeat(64),
     signature: "",
     ...overrides,

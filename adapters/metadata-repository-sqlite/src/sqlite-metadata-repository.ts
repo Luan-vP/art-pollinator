@@ -45,14 +45,16 @@
  * original fields) — precisely the kind of change flattened columns force
  * a genuine migration to handle, and a blob column would silently absorb.
  *
- * `blobPointer` is flattened to its one current field
- * (`blob_pointer_hash`) rather than given a satellite table — `BlobPointer`
- * is a single-field placeholder today (`metadata-token.ts`'s doc comment:
- * "the real ... blob pointer design is issue #39"). When that type grows,
- * the migration that adds columns/tables for it is the correct place to
- * revisit this, not a JSON-blob workaround now.
+ * `blobPointer` is flattened to its fields rather than given a satellite
+ * table — issue #39 turned `BlobPointer` into a resolvable-anywhere
+ * discriminated union (`{ scheme: "local-filesystem", contentHash }` today;
+ * `{ scheme: "bucket", contentHash, bucketRef }` is a documented future
+ * variant with no resolver yet — see `metadata-token.ts`'s doc comment), so
+ * `blob_pointer_scheme` and `blob_pointer_bucket_ref` (migration v4) sit
+ * alongside the original `blob_pointer_hash` column. `blob_pointer_bucket_ref`
+ * is nullable — only the (unimplemented) `bucket` scheme ever populates it.
  */
-import type { MetadataRepositoryPort, MetadataToken } from "@art-pollinator/core";
+import type { BlobPointer, MetadataRepositoryPort, MetadataToken } from "@art-pollinator/core";
 // `./node-sqlite.js` re-exports `node:sqlite`'s `DatabaseSync` — see that
 // file's header comment for why this isn't a direct `node:sqlite` import.
 import { DatabaseSync } from "./node-sqlite.js";
@@ -65,9 +67,31 @@ interface MetadataTokenRow {
   description: string;
   content_type: string;
   blob_pointer_hash: string;
+  blob_pointer_scheme: string | null;
+  blob_pointer_bucket_ref: string | null;
   hop_count: number;
   signature: string;
   signer_public_key: string | null;
+}
+
+/**
+ * Reconstruct the discriminated `BlobPointer` union from its flattened
+ * columns. `blob_pointer_scheme` is only nullable in the type because a
+ * pre-migration-v4 row could theoretically still be mid-migration; by the
+ * time `runMigrations` has finished (always true by the time any query
+ * runs — the constructor awaits it first), every row has been backfilled to
+ * `'local-filesystem'`, so `null`/`'local-filesystem'` are treated
+ * identically here and only `'bucket'` is ever a distinct case.
+ */
+function rowToBlobPointer(row: MetadataTokenRow): BlobPointer {
+  if (row.blob_pointer_scheme === "bucket") {
+    return {
+      scheme: "bucket",
+      contentHash: row.blob_pointer_hash,
+      bucketRef: row.blob_pointer_bucket_ref ?? "",
+    };
+  }
+  return { scheme: "local-filesystem", contentHash: row.blob_pointer_hash };
 }
 
 function rowToToken(row: MetadataTokenRow): MetadataToken {
@@ -78,7 +102,7 @@ function rowToToken(row: MetadataTokenRow): MetadataToken {
     description: row.description,
     provenance: { hopCount: row.hop_count },
     contentType: row.content_type,
-    blobPointer: { contentHash: row.blob_pointer_hash },
+    blobPointer: rowToBlobPointer(row),
     contentHash: row.content_hash,
     signature: row.signature,
     ...(hasSigner ? { signerPublicKey: row.signer_public_key as string } : {}),
@@ -106,17 +130,20 @@ export class SqliteMetadataRepository implements MetadataRepositoryPort {
   }
 
   save(token: MetadataToken): Promise<void> {
+    const bucketRef = token.blobPointer.scheme === "bucket" ? token.blobPointer.bucketRef : null;
     this.db
       .prepare(
         `INSERT INTO metadata_tokens
-           (content_hash, title, creator, description, content_type, blob_pointer_hash, hop_count, signature, signer_public_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (content_hash, title, creator, description, content_type, blob_pointer_hash, blob_pointer_scheme, blob_pointer_bucket_ref, hop_count, signature, signer_public_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(content_hash) DO UPDATE SET
            title = excluded.title,
            creator = excluded.creator,
            description = excluded.description,
            content_type = excluded.content_type,
            blob_pointer_hash = excluded.blob_pointer_hash,
+           blob_pointer_scheme = excluded.blob_pointer_scheme,
+           blob_pointer_bucket_ref = excluded.blob_pointer_bucket_ref,
            hop_count = excluded.hop_count,
            signature = excluded.signature,
            signer_public_key = excluded.signer_public_key`,
@@ -128,6 +155,8 @@ export class SqliteMetadataRepository implements MetadataRepositoryPort {
         token.description,
         token.contentType,
         token.blobPointer.contentHash,
+        token.blobPointer.scheme,
+        bucketRef,
         token.provenance.hopCount,
         token.signature,
         token.signerPublicKey ?? null,

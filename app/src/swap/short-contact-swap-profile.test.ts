@@ -47,7 +47,7 @@ function nearBudgetToken(contentHash: string): MetadataToken {
     creator: "Someone whose name is part of this token's byte footprint",
     provenance: { hopCount: 0 },
     contentType: "image/jpeg",
-    blobPointer: { contentHash },
+    blobPointer: { scheme: "local-filesystem", contentHash },
     contentHash,
     signature: "",
   };
