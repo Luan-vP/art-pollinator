@@ -39,6 +39,7 @@
  * `metadataRepository` instance keeps them consistent.
  */
 import {
+  DEFAULT_LIBRARY_CAPACITY,
   EMPTY_LIBRARY,
   addItem,
   lockItem,
@@ -46,6 +47,7 @@ import {
   toPriority,
   unlockItem,
   type Library,
+  type LibraryCapacity,
   type LibraryOperationResult,
   type MetadataRepositoryPort,
   type MetadataToken,
@@ -60,16 +62,29 @@ export class LibraryService {
   private constructor(
     private readonly metadataRepository: MetadataRepositoryPort,
     initialLibrary: Library,
+    private readonly capacity: LibraryCapacity,
   ) {
     this.library = initialLibrary;
   }
 
-  /** Construct a `LibraryService`, seeding its initial state from every token `metadataRepository` already holds. */
-  static async create(metadataRepository: MetadataRepositoryPort): Promise<LibraryService> {
+  /**
+   * Construct a `LibraryService`, seeding its initial state from every token
+   * `metadataRepository` already holds. `capacity` defaults to the phone's
+   * fixed {@link DEFAULT_LIBRARY_CAPACITY} (AGENTS.md §6); a node
+   * composition root passes its own, larger, configured capacity (issue
+   * #46, `docs/adr/0012-node-library-capacity-generalization.md`) — the
+   * same value it also passes to `SwapService` and to the naive
+   * accept/eviction policy factories, so every consumer of this device's
+   * `Library` agrees on what "full" means.
+   */
+  static async create(
+    metadataRepository: MetadataRepositoryPort,
+    capacity: LibraryCapacity = DEFAULT_LIBRARY_CAPACITY,
+  ): Promise<LibraryService> {
     const persisted = await metadataRepository.listAll();
     let library = EMPTY_LIBRARY;
     for (const token of persisted) {
-      const result = addItem(library, token, toPriority(0));
+      const result = addItem(library, token, toPriority(0), capacity);
       // A persisted repository should never already exceed swappable
       // capacity (issue #23 dedup + the swap-side eviction path keep the
       // repository and library in step) — surfacing a loud error here
@@ -80,7 +95,7 @@ export class LibraryService {
       }
       library = result.library;
     }
-    return new LibraryService(metadataRepository, library);
+    return new LibraryService(metadataRepository, library, capacity);
   }
 
   /**
@@ -92,9 +107,13 @@ export class LibraryService {
    * Kept synchronous specifically so a composition root's factory function
    * doesn't itself need to become `async` just to build one of these (issue
    * #37 — see `clients/mobile/src/composition/composition-root-shared.ts`).
+   * `capacity` defaults the same way {@link create} does.
    */
-  static createEmpty(metadataRepository: MetadataRepositoryPort): LibraryService {
-    return new LibraryService(metadataRepository, EMPTY_LIBRARY);
+  static createEmpty(
+    metadataRepository: MetadataRepositoryPort,
+    capacity: LibraryCapacity = DEFAULT_LIBRARY_CAPACITY,
+  ): LibraryService {
+    return new LibraryService(metadataRepository, EMPTY_LIBRARY, capacity);
   }
 
   /** The current `Library` snapshot. */
@@ -138,17 +157,17 @@ export class LibraryService {
 
   /** Lock an item (moves it into the lockable pool — never evicted, never offered). See `core`'s `lockItem` for rejection cases (already locked, pool full, absent item). */
   lock(contentHash: string): LibraryOperationResult {
-    return this.applyResult(lockItem(this.library, contentHash));
+    return this.applyResult(lockItem(this.library, contentHash, this.capacity));
   }
 
   /** Unlock an item (moves it back into the swappable pool). See `core`'s `unlockItem` for rejection cases. */
   unlock(contentHash: string): LibraryOperationResult {
-    return this.applyResult(unlockItem(this.library, contentHash));
+    return this.applyResult(unlockItem(this.library, contentHash, this.capacity));
   }
 
   /** Add a new item — persists to `metadataRepository`, then applies `core`'s `addItem` to the in-memory snapshot. */
   async add(token: MetadataToken): Promise<LibraryOperationResult> {
-    const result = addItem(this.library, token, toPriority(0));
+    const result = addItem(this.library, token, toPriority(0), this.capacity);
     if (result.ok) {
       await this.metadataRepository.save(token);
     }
