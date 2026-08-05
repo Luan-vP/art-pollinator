@@ -16,3 +16,4 @@
 export * from "./validate-lock-request.js";
 export * from "./swap/swap-service.js";
 export * from "./identity/sign-metadata-token.js";
+export * from "./swap/short-contact-swap-profile.js";
