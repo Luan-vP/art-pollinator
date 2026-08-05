@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   lint-typecheck-test:
-    name: Lint, typecheck, test (core + adapters)
+    name: Lint, typecheck, test (core + app + adapters + clients)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,6 +30,9 @@ jobs:
       - name: Prove the dependency-direction rule fails on violations
         run: npm run verify:boundaries-rule
 
+      - name: Prove the RN Web compatibility gate fails on a native-only import leak
+        run: npm run verify:web-bundle-gate-rule
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -45,29 +48,53 @@ jobs:
       - name: Test — adapters (integration, real I/O allowed)
         run: npm run test:adapters
 
+      - name: Test — clients (composition-root, pure)
+        run: npm run test:clients
+
   # --- Client target builds -------------------------------------------------
   #
-  # The React Native client scaffold (iOS, Android, web from one codebase)
-  # does not exist yet — it lands in IMPLEMENTATION.md item #29, tracked as
-  # issue #29. Until then these are placeholder jobs so the CI *shape*
-  # required by AGENTS.md §4 ("All three client targets build") is already in
-  # place and ready to be filled in with a real build step, rather than
-  # bolted on later. Each step deliberately does nothing but report status
-  # and exit 0 — it must NOT be mistaken for a real build passing.
+  # The React Native (Expo) client scaffold landed in issue #29
+  # (clients/mobile). Web is the one target a standard Linux CI runner can
+  # actually build and verify — no Xcode, no Android SDK, no simulator/
+  # emulator/device required. iOS and Android remain honest placeholder jobs
+  # (same pattern issue #4 originally established): they deliberately do
+  # nothing but report status and exit 0, and must NOT be mistaken for a real
+  # build passing. Wiring real `expo run:ios` / `expo run:android` (or an EAS
+  # build) needs a macOS runner (iOS) and the Android SDK/emulator (Android)
+  # — out of scope for this batch; see clients/mobile/README.md.
   build-ios:
-    name: Build — iOS (placeholder, see #29)
+    name: Build — iOS (placeholder, needs a macOS runner + Xcode)
     runs-on: ubuntu-latest
     steps:
-      - run: echo "client scaffold not yet implemented, see #29" && exit 0
+      - run: echo "no macOS runner / Xcode wired up yet — see clients/mobile/README.md" && exit 0
 
   build-android:
-    name: Build — Android (placeholder, see #29)
+    name: Build — Android (placeholder, needs the Android SDK/emulator)
     runs-on: ubuntu-latest
     steps:
-      - run: echo "client scaffold not yet implemented, see #29" && exit 0
+      - run: echo "no Android SDK/emulator wired up yet — see clients/mobile/README.md" && exit 0
 
   build-web:
-    name: Build — web (placeholder, see #29)
+    name: Build — web (real, issue #29/#31)
     runs-on: ubuntu-latest
     steps:
-      - run: echo "client scaffold not yet implemented, see #29" && exit 0
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Export the web bundle (Expo/Metro)
+        working-directory: clients/mobile
+        # EXPO_OFFLINE skips the CLI's telemetry/update-check/compatibility
+        # lookups against api.expo.dev — irrelevant to build correctness,
+        # but keeps this step hermetic and avoids depending on an external
+        # API being reachable from the runner.
+        run: EXPO_OFFLINE=1 npx expo export --platform web
+
+      - name: RN Web compatibility gate — fail if a native-only import reached the web bundle (issue #31)
+        run: npm run verify:web-bundle-gate

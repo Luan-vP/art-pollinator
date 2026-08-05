@@ -17,12 +17,15 @@
     "lint:boundaries": "node scripts/check-core-boundaries.mjs core/src",
     "lint": "npm run lint:eslint && npm run lint:boundaries",
     "verify:boundaries-rule": "node scripts/test-boundaries.mjs",
+    "verify:web-bundle-gate-rule": "node scripts/test-web-bundle-native-imports.mjs",
+    "verify:web-bundle-gate": "node scripts/check-web-bundle-native-imports.mjs clients/mobile/dist",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:core": "npm run test --workspace=core",
     "test:app": "npm run test --workspace=app",
     "test:adapters": "node scripts/run-adapter-tests.mjs",
-    "test": "npm run test:core && npm run test:app && npm run test:adapters",
+    "test:clients": "node scripts/run-client-tests.mjs",
+    "test": "npm run test:core && npm run test:app && npm run test:adapters && npm run test:clients",
     "prepare": "husky"
   },
   "devDependencies": {
