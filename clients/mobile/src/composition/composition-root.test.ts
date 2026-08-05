@@ -1,10 +1,40 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-import { createCompositionRoot as createNativeCompositionRoot } from "./composition-root.native.js";
-import { createCompositionRoot as createWebCompositionRoot } from "./composition-root.web.js";
+// `composition-root.native.ts` now wires real `react-native-ble-plx` /
+// `munim-bluetooth` instances (issues #33/#34). Both packages ship
+// Flow-typed runtime source that Vite/Rollup's SSR module transform cannot
+// parse outside a Metro/Babel toolchain (confirmed empirically while
+// wiring this up: a plain `import` of either package here failed with
+// "Error: Expected '{', got 'type'" before this test file was updated to
+// mock them) — this is exactly the class of problem AGENTS.md §5's
+// "native-only imports must never reach the shared path" rule anticipates,
+// just surfacing in a test tool instead of a shipped bundle. `vi.mock`
+// replaces both packages with a minimal stand-in *before* Vite ever needs
+// to load their real source, letting this suite still import and execute
+// `composition-root.native.ts` for real, rather than falling back to
+// source-text-only assertions.
+vi.mock("react-native-ble-plx", () => ({
+  BleManager: class {
+    startDeviceScan(): void {
+      /* no-op stand-in — see this file's header comment */
+    }
+    stopDeviceScan(): void {
+      /* no-op stand-in */
+    }
+  },
+}));
+vi.mock("munim-bluetooth", () => ({
+  startAdvertising: () => undefined,
+  stopAdvertising: () => undefined,
+}));
+
+const { createCompositionRoot: createNativeCompositionRoot } =
+  await import("./composition-root.native.js");
+const { createCompositionRoot: createWebCompositionRoot } =
+  await import("./composition-root.web.js");
 
 // This test imports the platform-specific modules directly by filename
 // because vitest (plain Node) has no concept of Metro's platform-extension
@@ -29,13 +59,20 @@ describe("capability negotiation at the composition root (issue #30)", () => {
     expect(createWebCompositionRoot().capabilities.wifiNodeSwap).toBe(true);
   });
 
-  it("neither composition-root variant registers a transport/discovery port yet", () => {
-    // #33/#34/#43/#44 have not landed in this batch — both platforms leave
-    // the port fields undefined rather than a no-op fake standing in.
-    expect(createNativeCompositionRoot().ports.transport).toBeUndefined();
-    expect(createNativeCompositionRoot().ports.discovery).toBeUndefined();
-    expect(createWebCompositionRoot().ports.transport).toBeUndefined();
-    expect(createWebCompositionRoot().ports.discovery).toBeUndefined();
+  it("native registers BleTransportAdapter/BleDiscoveryAdapter for transport/discovery (issues #33/#34)", () => {
+    const root = createNativeCompositionRoot();
+    expect(root.ports.transport).toBeDefined();
+    expect(root.ports.discovery).toBeDefined();
+    expect(root.ports.transport?.constructor.name).toBe("BleTransportAdapter");
+    expect(root.ports.discovery?.constructor.name).toBe("BleDiscoveryAdapter");
+  });
+
+  it("web registers HttpTransportClient/LanDiscoveryProber for transport/discovery (issues #43/#44)", () => {
+    const root = createWebCompositionRoot();
+    expect(root.ports.transport).toBeDefined();
+    expect(root.ports.discovery).toBeDefined();
+    expect(root.ports.transport?.constructor.name).toBe("HttpTransportClient");
+    expect(root.ports.discovery?.constructor.name).toBe("LanDiscoveryProber");
   });
 
   // Matches an actual runtime conditional (a comparison against

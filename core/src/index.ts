@@ -37,3 +37,4 @@ export * from "./crypto/sha256.js";
 export * from "./crypto/canonical-json.js";
 export * from "./protocol/swap-message.js";
 export * from "./protocol/swap-message-codec.js";
+export * from "./ports/transport-port-contract-suite.js";

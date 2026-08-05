@@ -16,11 +16,19 @@
   },
   "dependencies": {
     "@art-pollinator/core": "*",
+    "@art-pollinator/discovery-ble": "*",
+    "@art-pollinator/discovery-lan": "*",
+    "@art-pollinator/scheduler-timer": "*",
+    "@art-pollinator/transport-ble": "*",
+    "@art-pollinator/transport-http": "*",
     "expo": "~57.0.10",
     "expo-status-bar": "~57.0.1",
+    "munim-bluetooth": "^0.6.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.2",
+    "react-native-ble-plx": "^3.5.1",
+    "react-native-nitro-modules": "*",
     "react-native-web": "~0.21.0"
   },
   "devDependencies": {

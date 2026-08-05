@@ -1,0 +1,24 @@
+{
+  "name": "@art-pollinator/discovery-lan",
+  "version": "0.0.0",
+  "description": "DiscoveryPort implementation for Wi-Fi/LAN (issue #44, pulled forward from Phase 2): on joining a network, probe known port(s) for the ArtPollinator service. Uses a plain HTTP probe-and-respond protocol (node:http server + fetch), not mDNS/UDP — see README.md for why, and specifically for how that keeps this working from the browser target with no BLE dependency.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@art-pollinator/core": "*"
+  },
+  "devDependencies": {
+    "@art-pollinator/scheduler-timer": "*",
+    "@types/node": "^22.10.5"
+  }
+}

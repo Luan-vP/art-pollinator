@@ -1,0 +1,23 @@
+{
+  "name": "@art-pollinator/transport-ble",
+  "version": "0.0.0",
+  "description": "TransportPort implementation over BLE GATT (issue #33), using react-native-ble-plx's Central-role read/write/notify. See README.md for scope (Central-role only this batch) and docs/adr/0010-hybrid-foreground-first-ble-swap-model.md / docs/adr/0011-ble-peripheral-advertising-library.md for why. NOT wired to a real react-native-ble-plx here — this package depends only on @art-pollinator/core; the real native module is a peer dependency supplied by the composition root that constructs BleTransportAdapter, so this package itself never becomes a native-only import (AGENTS.md §5).",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@art-pollinator/core": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5"
+  }
+}
