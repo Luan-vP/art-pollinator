@@ -15,10 +15,12 @@
     "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
+    "@art-pollinator/app": "*",
     "@art-pollinator/core": "*",
     "@art-pollinator/discovery-ble": "*",
     "@art-pollinator/discovery-lan": "*",
     "@art-pollinator/scheduler-timer": "*",
+    "@art-pollinator/seed-placeholder-dev": "*",
     "@art-pollinator/transport-ble": "*",
     "@art-pollinator/transport-http": "*",
     "expo": "~57.0.10",

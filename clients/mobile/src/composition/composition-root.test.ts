@@ -75,6 +75,37 @@ describe("capability negotiation at the composition root (issue #30)", () => {
     expect(root.ports.discovery?.constructor.name).toBe("LanDiscoveryProber");
   });
 
+  it("native instantiates a real SwapService wired against the real BLE adapters (issue #37)", () => {
+    const root = createNativeCompositionRoot();
+    expect(root.services.swapService).toBeDefined();
+    expect(root.services.swapService.constructor.name).toBe("SwapService");
+  });
+
+  it("web instantiates a real SwapService wired against the real HTTP/LAN adapters (issue #37)", () => {
+    const root = createWebCompositionRoot();
+    expect(root.services.swapService).toBeDefined();
+    expect(root.services.swapService.constructor.name).toBe("SwapService");
+  });
+
+  it("both platforms expose a LibraryService and a SwapActivityLog (issue #38)", () => {
+    for (const root of [createNativeCompositionRoot(), createWebCompositionRoot()]) {
+      expect(root.services.libraryService.constructor.name).toBe("LibraryService");
+      expect(root.services.swapActivityLog.constructor.name).toBe("SwapActivityLog");
+    }
+  });
+
+  it("the library starts EMPTY on both platforms in this (non-dev-flagged) test environment — placeholder seed defaults OFF (issue #42 hard boundary)", () => {
+    // No `EXPO_PUBLIC_ENABLE_PLACEHOLDER_SEED` is set in this test run, and
+    // there is no RN/Metro `__DEV__` global under plain vitest/Node either
+    // — see `composition-root-shared.ts`'s `placeholderSeedGateInputs` doc
+    // comment for why that alone is enough to prove the default-off case,
+    // without mocking anything.
+    expect(process.env.EXPO_PUBLIC_ENABLE_PLACEHOLDER_SEED).toBeUndefined();
+    for (const root of [createNativeCompositionRoot(), createWebCompositionRoot()]) {
+      expect(root.services.libraryService.getLibrary().entries.size).toBe(0);
+    }
+  });
+
   // Matches an actual runtime conditional (a comparison against
   // Platform.OS/typeof window), not the doc comments in these same files
   // that *describe* the mechanism in prose — those legitimately mention
@@ -82,7 +113,12 @@ describe("capability negotiation at the composition root (issue #30)", () => {
   // them, which is exactly the point being documented (AGENTS.md §2 rule 2).
   const RUNTIME_CONDITIONAL_PATTERN = /(Platform\.OS\s*[=!]==|typeof\s+window\s*[=!]==)/;
 
-  it.each(["composition-root.native.ts", "composition-root.web.ts", "types.ts"])(
+  it.each([
+    "composition-root.native.ts",
+    "composition-root.web.ts",
+    "composition-root-shared.ts",
+    "types.ts",
+  ])(
     "%s contains no Platform.OS or typeof window runtime conditional — the platform split is a file, not a runtime branch (AGENTS.md §2 rule 2)",
     (file) => {
       const contents = readFileSync(join(__dirname, file), "utf8");

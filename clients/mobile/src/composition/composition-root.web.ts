@@ -3,6 +3,12 @@ import { placeholderSelfPeerId } from "./placeholder-peer-id";
 import { TimerSchedulerPort } from "@art-pollinator/scheduler-timer";
 import { HttpTransportClient } from "@art-pollinator/transport-http";
 import { LanDiscoveryProber } from "@art-pollinator/discovery-lan";
+import {
+  buildSharedServices,
+  buildSwapService,
+  maybeSeedPlaceholderLibrary,
+  wireAutomaticSwap,
+} from "./composition-root-shared";
 
 /**
  * Composition root for the web (React Native Web) build. Metro resolves
@@ -42,22 +48,38 @@ import { LanDiscoveryProber } from "@art-pollinator/discovery-lan";
  * a browser, and no pairing/config UI supplies one yet) — a real, current
  * gap, not fabricated. A future pairing flow would populate this list
  * before calling `startDiscovery`.
+ *
+ * `services` (issue #37/#38): `SwapService` is constructed here against the
+ * real `HttpTransportClient` below (see `composition-root-shared.ts`'s
+ * `buildSwapService` doc comment), automatic swapping is wired to this
+ * platform's real `LanDiscoveryProber`, and the placeholder seed (issue
+ * #42) is applied only if this build's dev flag is explicitly on (off by
+ * default — see `composition-root-shared.ts`'s `placeholderSeedGateInputs`).
  */
 export function createCompositionRoot(): CompositionRoot {
   const scheduler = new TimerSchedulerPort();
   const selfAddress = { id: placeholderSelfPeerId() };
+  const transport = new HttpTransportClient({ selfAddress });
+  const discovery = new LanDiscoveryProber({
+    candidateHosts: [], // see doc comment above — populated by a future pairing flow
+    scheduler,
+  });
+
+  const shared = buildSharedServices();
+  const swapService = buildSwapService(transport, shared);
+  maybeSeedPlaceholderLibrary(shared.libraryService);
+  wireAutomaticSwap(discovery, swapService, shared.libraryService);
 
   return {
     capabilities: {
       ble: false,
       wifiNodeSwap: true,
     },
-    ports: {
-      transport: new HttpTransportClient({ selfAddress }),
-      discovery: new LanDiscoveryProber({
-        candidateHosts: [], // see doc comment above — populated by a future pairing flow
-        scheduler,
-      }),
+    ports: { transport, discovery },
+    services: {
+      swapService,
+      libraryService: shared.libraryService,
+      swapActivityLog: shared.swapActivityLog,
     },
   };
 }
