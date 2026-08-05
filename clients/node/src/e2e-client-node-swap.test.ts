@@ -214,7 +214,8 @@ describe("end-to-end: client ↔ node, over a real spawned OS process and real H
       ARTPOLLINATOR_NODE_DISCOVERY_PORT: String(TEST_DISCOVERY_PORT),
       ARTPOLLINATOR_NODE_DB_PATH: nodeDbPath,
     });
-    child = spawned.child;
+    const nodeProcess = spawned.child;
+    child = nodeProcess; // tracked for afterEach's safety-net cleanup
     expect(spawned.listening.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
 
     // --- The client side: real LAN discovery of the real node process,
@@ -294,28 +295,24 @@ describe("end-to-end: client ↔ node, over a real spawned OS process and real H
     ]);
 
     // --- Proof the *other process* actually persisted what it received:
-    // reopen the exact SQLite file the child process wrote to, from this
-    // test process, after the child machinery has had a moment to finish
-    // its own `metadataRepository.save()` calls. ---
-    await waitFor(async () => {
-      const verifyRepository = new SqliteMetadataRepository({ filePath: nodeDbPath });
-      try {
-        const persisted = await verifyRepository.listAll();
-        return persisted.map((item) => item.contentHash).sort();
-      } finally {
-        verifyRepository.close();
-      }
-    }, ["e2e-piece-one", "e2e-piece-two"]);
+    // stop the child process first — SQLite does not tolerate two
+    // connections (the still-running child's, and this test process
+    // reopening the same file) hitting the database concurrently, so this
+    // deliberately waits for the child to fully exit (flushing and closing
+    // its own connection, via `index.ts`'s real SIGTERM handler) before
+    // reopening the exact same file from this test process. ---
+    await stopNodeServer(nodeProcess);
+    child = undefined; // already stopped — afterEach's cleanup is now a no-op
+
+    const verifyRepository = new SqliteMetadataRepository({ filePath: nodeDbPath });
+    try {
+      const persisted = await verifyRepository.listAll();
+      expect(persisted.map((item) => item.contentHash).sort()).toEqual([
+        "e2e-piece-one",
+        "e2e-piece-two",
+      ]);
+    } finally {
+      verifyRepository.close();
+    }
   });
 });
-
-/** Poll `check` until it resolves to `expected` (deep-equal) or a bounded number of attempts is exhausted — the swap's own completion is awaited above; this only accounts for the other process's fire-and-forget `libraryService.adoptLibrary`/final log flush having a moment to settle. */
-async function waitFor<T>(check: () => Promise<T>, expected: T, attempts = 20): Promise<void> {
-  for (let i = 0; i < attempts; i++) {
-    const actual = await check();
-    if (JSON.stringify(actual) === JSON.stringify(expected)) return;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  const finalActual = await check();
-  expect(finalActual).toEqual(expected);
-}
