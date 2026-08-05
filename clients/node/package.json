@@ -1,0 +1,30 @@
+{
+  "name": "@art-pollinator/node",
+  "version": "0.0.0",
+  "description": "Composition root for the stationary-node target (SPEC.md §4, issue #45): a long-lived Node process wiring HttpTransportServer + LanDiscoveryResponder + SqliteMetadataRepository to the same app/core SwapService/LibraryService the mobile composition root uses — no domain logic duplicated between them. Depends on app, core, and adapters/*; never depended on by any of them.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@art-pollinator/app": "*",
+    "@art-pollinator/core": "*",
+    "@art-pollinator/discovery-lan": "*",
+    "@art-pollinator/identity-node": "*",
+    "@art-pollinator/metadata-repository-sqlite": "*",
+    "@art-pollinator/transport-http": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.23.7"
+  }
+}

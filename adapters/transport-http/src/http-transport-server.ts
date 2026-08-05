@@ -31,6 +31,27 @@
  * only path a server-initiated message can travel down, which reflects
  * (isn't a workaround for) HTTP's real
  * client-initiates-every-connection shape.
+ *
+ * ## `onNewPeer`: an optional hook for a passive listener that wants to react to arrivals
+ *
+ * A device dialling into this server already knows to call `TransportPort`'s
+ * `send`/`receive` because *it* discovered this server (LAN probe, SPEC.md
+ * §6.1) and is driving `SwapService.swap()` itself. This server's own side
+ * has no symmetric discovery event to key off of — nothing here ever calls
+ * `startDiscovery`, since it is the thing being discovered, not the thing
+ * discovering — so a composition root that wants to *reciprocate* (run its
+ * own `SwapService.swap()` back at whoever just connected, the way a
+ * stationary node in SPEC.md §4 must) has no signal to react to without this
+ * hook. `onNewPeer(peer)` fires synchronously the first time a `POST
+ * /messages` arrives from a given `x-peer-id` this server has not seen
+ * before — *before* the message is queued for `receive()`, not instead of
+ * queuing it, so a caller that immediately starts its own
+ * `swapService.swap({ address: peer, ... }, library)` in response still
+ * finds that same message waiting the moment its internal `receive()`
+ * call runs (see `clients/node`'s composition root for the real use of
+ * this). Optional; omitted, this is a no-op and every existing caller's
+ * behaviour is unchanged — this is a purely additive, backward-compatible
+ * constructor option (issue #45).
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -51,19 +72,24 @@ interface PendingLongPoll {
 export interface HttpTransportServerOptions {
   /** How long a peer's `GET /messages` long-poll waits before a `204` if nothing is queued. Defaults to {@link DEFAULT_LONG_POLL_TIMEOUT_MS}. */
   readonly longPollTimeoutMs?: number;
+  /** Fires once per never-before-seen `x-peer-id` — see this file's doc comment ("`onNewPeer`: an optional hook..."). Omit for no-op (default; existing behavior unchanged). */
+  readonly onNewPeer?: (peer: PeerAddress) => void;
 }
 
 export class HttpTransportServer implements TransportPort {
   private readonly server: Server;
   private readonly longPollTimeoutMs: number;
+  private readonly onNewPeer: ((peer: PeerAddress) => void) | undefined;
 
   private readonly inbox: InboundMessage[] = [];
   private readonly receiveWaiters: ((message: InboundMessage) => void)[] = [];
   private readonly outboundQueueByPeer = new Map<string, Uint8Array[]>();
   private readonly pendingLongPollByPeer = new Map<string, PendingLongPoll>();
+  private readonly knownPeerIds = new Set<string>();
 
   constructor(options: HttpTransportServerOptions = {}) {
     this.longPollTimeoutMs = options.longPollTimeoutMs ?? DEFAULT_LONG_POLL_TIMEOUT_MS;
+    this.onNewPeer = options.onNewPeer;
     this.server = createServer((req, res) => {
       this.handleRequest(req, res);
     });
@@ -139,6 +165,11 @@ export class HttpTransportServer implements TransportPort {
       this.pendingLongPollByPeer.delete(peer.id);
       writeBytes(pending.res, 204, new Uint8Array(0));
     }
+    // Forget this peer so a later reconnection is treated as new again —
+    // `onNewPeer` fires once per *episode* of contact, not once ever, so a
+    // composition root's reactive swap-on-connect glue (`clients/node`) runs
+    // again for a peer that comes back after actually disconnecting.
+    this.knownPeerIds.delete(peer.id);
     return Promise.resolve();
   }
 
@@ -163,6 +194,10 @@ export class HttpTransportServer implements TransportPort {
     }
     readBody(req)
       .then((message) => {
+        if (!this.knownPeerIds.has(fromId)) {
+          this.knownPeerIds.add(fromId);
+          this.onNewPeer?.({ id: fromId });
+        }
         const inbound: InboundMessage = { from: { id: fromId }, message };
         const waiter = this.receiveWaiters.shift();
         if (waiter) {

@@ -82,6 +82,30 @@ export interface Library {
 /** A library with no items — the starting state for a fresh device. */
 export const EMPTY_LIBRARY: Library = { entries: new Map() };
 
+/**
+ * How many slots a `Library` enforces, in each of its two independent pools
+ * (see this file's own doc comment above for why they're independent
+ * pools, not one reclassifiable pool). `addItem`/`lockItem`/`unlockItem`
+ * each accept an optional `LibraryCapacity`, defaulting to
+ * {@link DEFAULT_LIBRARY_CAPACITY} — the phone's fixed parameters
+ * (AGENTS.md §6). A stationary node is a distinct node type with its own,
+ * larger, still-bounded capacity (SPEC.md §4) — see
+ * `docs/adr/0012-node-library-capacity-generalization.md` for why this is a
+ * configurable *value* on the one `Library` aggregate rather than a second
+ * aggregate type, and `clients/node`'s `node-capacity.ts` for the node's
+ * actual default and upper bound.
+ */
+export interface LibraryCapacity {
+  readonly maxLockableSlots: number;
+  readonly swappableSlots: number;
+}
+
+/** The phone's fixed capacity (AGENTS.md §6) — the default every call site in this file already had before {@link LibraryCapacity} existed. */
+export const DEFAULT_LIBRARY_CAPACITY: LibraryCapacity = {
+  maxLockableSlots: MAX_LOCKABLE_SLOTS,
+  swappableSlots: SWAPPABLE_SLOTS,
+};
+
 export type LibraryOperationResult =
   { readonly ok: true; readonly library: Library } | { readonly ok: false; readonly error: string };
 
@@ -134,15 +158,16 @@ export function addItem(
   library: Library,
   token: MetadataToken,
   priority: Priority = toPriority(0),
+  capacity: LibraryCapacity = DEFAULT_LIBRARY_CAPACITY,
 ): LibraryOperationResult {
   if (library.entries.has(token.contentHash)) {
     return { ok: true, library };
   }
 
-  if (swappableCount(library) >= SWAPPABLE_SLOTS) {
+  if (swappableCount(library) >= capacity.swappableSlots) {
     return {
       ok: false,
-      error: `Cannot add item: swappable pool is full (${String(SWAPPABLE_SLOTS)}/${String(SWAPPABLE_SLOTS)} slots occupied).`,
+      error: `Cannot add item: swappable pool is full (${String(capacity.swappableSlots)}/${String(capacity.swappableSlots)} slots occupied).`,
     };
   }
 
@@ -172,7 +197,11 @@ export function removeItem(library: Library, contentHash: string): LibraryOperat
  *   unchanged.
  * - Locking an item the library does not hold is rejected.
  */
-export function lockItem(library: Library, contentHash: string): LibraryOperationResult {
+export function lockItem(
+  library: Library,
+  contentHash: string,
+  capacity: LibraryCapacity = DEFAULT_LIBRARY_CAPACITY,
+): LibraryOperationResult {
   const entry = library.entries.get(contentHash);
   if (!entry) {
     return {
@@ -183,10 +212,10 @@ export function lockItem(library: Library, contentHash: string): LibraryOperatio
   if (entry.locked) {
     return { ok: true, library };
   }
-  if (lockedCount(library) >= MAX_LOCKABLE_SLOTS) {
+  if (lockedCount(library) >= capacity.maxLockableSlots) {
     return {
       ok: false,
-      error: `Cannot lock item: lockable pool is full (${String(MAX_LOCKABLE_SLOTS)}/${String(MAX_LOCKABLE_SLOTS)} slots occupied).`,
+      error: `Cannot lock item: lockable pool is full (${String(capacity.maxLockableSlots)}/${String(capacity.maxLockableSlots)} slots occupied).`,
     };
   }
 
@@ -207,7 +236,11 @@ export function lockItem(library: Library, contentHash: string): LibraryOperatio
  *   later issue, makes room.)
  * - Unlocking an item the library does not hold is rejected.
  */
-export function unlockItem(library: Library, contentHash: string): LibraryOperationResult {
+export function unlockItem(
+  library: Library,
+  contentHash: string,
+  capacity: LibraryCapacity = DEFAULT_LIBRARY_CAPACITY,
+): LibraryOperationResult {
   const entry = library.entries.get(contentHash);
   if (!entry) {
     return {
@@ -218,10 +251,10 @@ export function unlockItem(library: Library, contentHash: string): LibraryOperat
   if (!entry.locked) {
     return { ok: true, library };
   }
-  if (swappableCount(library) >= SWAPPABLE_SLOTS) {
+  if (swappableCount(library) >= capacity.swappableSlots) {
     return {
       ok: false,
-      error: `Cannot unlock item: swappable pool is full (${String(SWAPPABLE_SLOTS)}/${String(SWAPPABLE_SLOTS)} slots occupied).`,
+      error: `Cannot unlock item: swappable pool is full (${String(capacity.swappableSlots)}/${String(capacity.swappableSlots)} slots occupied).`,
     };
   }
 
