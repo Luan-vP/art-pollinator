@@ -16,9 +16,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Node 22 (>=22.5.0), not 20: `@art-pollinator/metadata-repository-sqlite`
+      # (its own `engines.node`) and the new `@art-pollinator/node` composition
+      # root (clients/node, issue #45) both need `node:sqlite`, which does not
+      # exist on Node 20 at all. `engines` is advisory in npm (not enforced
+      # without `engine-strict`), so this mismatch previously went unnoticed by
+      # `npm ci` itself, but real `node:sqlite` usage in `npm run test:adapters`/
+      # `npm run test:clients` needs the runtime to actually provide the module.
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: "npm"
 
       - name: Install dependencies
@@ -82,7 +89,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: "npm"
 
       - name: Install dependencies
