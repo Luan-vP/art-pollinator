@@ -130,6 +130,54 @@ describe("HttpTransportServer + HttpTransportClient — real HTTP round trip", (
     expect(settled).toBe(false);
   });
 
+  it("onNewPeer fires exactly once for a peer's first message, and the message is still delivered normally to receive() (issue #45)", async () => {
+    const seen: string[] = [];
+    const s = new HttpTransportServer({
+      longPollTimeoutMs: 2_000,
+      onNewPeer: (peer) => seen.push(peer.id),
+    });
+    const { baseUrl } = await s.listen(0);
+    server = s;
+    const client = new HttpTransportClient({ selfAddress: { id: "device-a" } });
+
+    await client.send(
+      { id: baseUrl },
+      encodeSwapProtocolMessage(createOfferMessage([token("piece-1")])),
+    );
+    expect(seen).toEqual(["device-a"]);
+
+    // The message onNewPeer fired for is still delivered to receive() —
+    // the hook observes, it never consumes.
+    const inbound = await s.receive();
+    expect(decodeSwapProtocolMessage(inbound.message)).toEqual(
+      createOfferMessage([token("piece-1")]),
+    );
+
+    // A second message from the same peer does not fire onNewPeer again.
+    await client.send({ id: baseUrl }, encodeSwapProtocolMessage(createAcceptMessage(["piece-1"])));
+    expect(seen).toEqual(["device-a"]);
+  });
+
+  it("onNewPeer fires again after disconnect() forgets the peer, then it reconnects (issue #45)", async () => {
+    const seen: string[] = [];
+    const s = new HttpTransportServer({
+      longPollTimeoutMs: 2_000,
+      onNewPeer: (peer) => seen.push(peer.id),
+    });
+    const { baseUrl } = await s.listen(0);
+    server = s;
+    const client = new HttpTransportClient({ selfAddress: { id: "device-a" } });
+
+    await client.send({ id: baseUrl }, new Uint8Array([1]));
+    await s.receive();
+    expect(seen).toEqual(["device-a"]);
+
+    await s.disconnect({ id: "device-a" });
+    await client.send({ id: baseUrl }, new Uint8Array([2]));
+    await s.receive();
+    expect(seen).toEqual(["device-a", "device-a"]);
+  });
+
   it("connect() is idempotent — calling it twice for the same peer does not start a second poll loop", async () => {
     const { server: s, baseUrl } = await startServer();
     const client = new HttpTransportClient({ selfAddress: { id: "device-a" } });
