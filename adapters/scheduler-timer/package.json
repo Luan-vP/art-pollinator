@@ -1,0 +1,23 @@
+{
+  "name": "@art-pollinator/scheduler-timer",
+  "version": "0.0.0",
+  "description": "Real (non-fake) SchedulerPort implementation using setTimeout/setInterval (TimerSchedulerPort), plus ScanScheduler — the configurable duty-cycle/window/interval/backoff scan-scheduling policy issue #35 asks for, built on SchedulerPort + ClockPort so it is deterministically testable without real timers.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@art-pollinator/core": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5"
+  }
+}
