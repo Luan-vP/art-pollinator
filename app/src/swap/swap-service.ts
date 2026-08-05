@@ -92,6 +92,19 @@
  * exactly the same "policies decide, the surrounding seam enforces its own
  * invariants independently" split `OfferPolicy`/`EvictionPolicy` already use
  * for the locked-item invariant (AGENTS.md §6).
+ *
+ * ## Design: an optional `SwapActivityLog` records every completed swap
+ *
+ * Issue #38's swap screen needs to "show incoming swap activity as it
+ * happens," driven by `SwapService`'s outcomes — but a screen can't await a
+ * `swap()` call it never made (a background discovery loop is what actually
+ * calls `swap`, not the screen). `activityLog` (`./swap-activity-log.js`,
+ * optional, default `undefined` to keep existing callers/tests that
+ * construct a `SwapService` without one unchanged) is recorded to once, at
+ * the very end of a successful `swap()` call, with the exact `SwapOutcome`
+ * this method already returns — no second, UI-specific outcome shape
+ * invented. A composition root that wants swap activity visible in the UI
+ * supplies one; `clients/`'s swap screen subscribes to it.
  */
 import {
   addItem,
@@ -122,6 +135,7 @@ import {
   type SwapTransitionResult,
   type TransportPort,
 } from "@art-pollinator/core";
+import type { SwapActivityLog } from "./swap-activity-log.js";
 
 export interface SwapServiceDeps {
   readonly transport: TransportPort;
@@ -142,6 +156,8 @@ export interface SwapServiceDeps {
    * exercised without real cryptography).
    */
   readonly signatureVerifier?: SignatureVerifierPort;
+  /** Recorded to once, at the end of a successful swap (issue #38) — see this file's doc comment. Omit to skip recording entirely (default; keeps existing callers unchanged). */
+  readonly activityLog?: SwapActivityLog;
 }
 
 /** The outcome of one completed swap, from this device's point of view. */
@@ -281,7 +297,7 @@ export class SwapService {
       await encounterLog.record(item.contentHash, "evicted", now);
     }
 
-    return {
+    const outcome: SwapOutcome = {
       library: nextLibrary,
       offered,
       sent,
@@ -290,6 +306,8 @@ export class SwapService {
       evicted,
       state,
     };
+    this.deps.activityLog?.record(outcome);
+    return outcome;
   }
 }
 
