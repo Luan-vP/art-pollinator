@@ -10,7 +10,12 @@
  * (`clients/`) where platform-specific code is expected to live.
  */
 import type { DiscoveryPort, TransportPort } from "@art-pollinator/core";
-import type { LibraryService, SwapActivityLog, SwapService } from "@art-pollinator/app";
+import type {
+  IngestionService,
+  LibraryService,
+  SwapActivityLog,
+  SwapService,
+} from "@art-pollinator/app";
 
 /**
  * What this platform build can do, decided once here and threaded down to
@@ -70,6 +75,14 @@ export interface CompositionRootServices {
   readonly libraryService: LibraryService;
   /** Issue #38's swap screen subscribes to this for live incoming-swap activity. */
   readonly swapActivityLog: SwapActivityLog;
+  /**
+   * Issue #53/#55's authoring use case: `AuthoringScreen` calls
+   * `ingest()` on this to add a user-authored (or venue-seeded) piece to
+   * `libraryService`'s `Library`. See `composition-root-shared.ts`'s
+   * `buildIngestionService` doc comment for the blob store this is wired
+   * against on this platform.
+   */
+  readonly ingestionService: IngestionService;
 }
 
 export interface CompositionRoot {

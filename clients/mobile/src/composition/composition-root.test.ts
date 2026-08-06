@@ -94,6 +94,12 @@ describe("capability negotiation at the composition root (issue #30)", () => {
     }
   });
 
+  it("both platforms expose a real IngestionService, wired against the same libraryService (issue #53/#55)", () => {
+    for (const root of [createNativeCompositionRoot(), createWebCompositionRoot()]) {
+      expect(root.services.ingestionService.constructor.name).toBe("IngestionService");
+    }
+  });
+
   it("the library starts EMPTY on both platforms in this (non-dev-flagged) test environment — placeholder seed defaults OFF (issue #42 hard boundary)", () => {
     // No `EXPO_PUBLIC_ENABLE_PLACEHOLDER_SEED` is set in this test run, and
     // there is no RN/Metro `__DEV__` global under plain vitest/Node either

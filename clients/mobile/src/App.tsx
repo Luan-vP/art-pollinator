@@ -2,6 +2,7 @@ import { StatusBar } from "expo-status-bar";
 import { ScrollView, StyleSheet, View } from "react-native";
 
 import { CapabilitiesProvider } from "./composition/capabilities-context";
+import { AuthoringScreen } from "./screens/authoring-screen";
 import { LibraryScreen } from "./screens/library-screen";
 import { SwapScreen } from "./screens/swap-screen";
 
@@ -17,6 +18,7 @@ export default function App() {
       <View style={styles.root}>
         <ScrollView>
           <LibraryScreen />
+          <AuthoringScreen />
           <SwapScreen />
         </ScrollView>
         <StatusBar style="auto" />

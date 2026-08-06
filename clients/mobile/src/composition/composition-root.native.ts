@@ -12,9 +12,12 @@ import {
 } from "../ble/real-ble-scan-and-central-library";
 import { createRealBleAdvertiseLibrary } from "../ble/real-ble-advertise-library";
 import {
+  buildIngestionService,
   buildSharedServices,
   buildSwapService,
+  // @placeholder-retirement:start
   maybeSeedPlaceholderLibrary,
+  // @placeholder-retirement:end
   wireAutomaticSwap,
 } from "./composition-root-shared";
 
@@ -74,7 +77,10 @@ export function createCompositionRoot(): CompositionRoot {
 
   const shared = buildSharedServices();
   const swapService = buildSwapService(transport, shared);
+  const ingestionService = buildIngestionService(shared);
+  // @placeholder-retirement:start
   maybeSeedPlaceholderLibrary(shared.libraryService);
+  // @placeholder-retirement:end
   wireAutomaticSwap(discovery, swapService, shared.libraryService);
 
   return {
@@ -87,6 +93,7 @@ export function createCompositionRoot(): CompositionRoot {
       swapService,
       libraryService: shared.libraryService,
       swapActivityLog: shared.swapActivityLog,
+      ingestionService,
     },
   };
 }

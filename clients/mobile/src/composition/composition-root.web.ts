@@ -4,9 +4,12 @@ import { TimerSchedulerPort } from "@art-pollinator/scheduler-timer";
 import { HttpTransportClient } from "@art-pollinator/transport-http";
 import { LanDiscoveryProber } from "@art-pollinator/discovery-lan";
 import {
+  buildIngestionService,
   buildSharedServices,
   buildSwapService,
+  // @placeholder-retirement:start
   maybeSeedPlaceholderLibrary,
+  // @placeholder-retirement:end
   wireAutomaticSwap,
 } from "./composition-root-shared";
 
@@ -67,7 +70,10 @@ export function createCompositionRoot(): CompositionRoot {
 
   const shared = buildSharedServices();
   const swapService = buildSwapService(transport, shared);
+  const ingestionService = buildIngestionService(shared);
+  // @placeholder-retirement:start
   maybeSeedPlaceholderLibrary(shared.libraryService);
+  // @placeholder-retirement:end
   wireAutomaticSwap(discovery, swapService, shared.libraryService);
 
   return {
@@ -80,6 +86,7 @@ export function createCompositionRoot(): CompositionRoot {
       swapService,
       libraryService: shared.libraryService,
       swapActivityLog: shared.swapActivityLog,
+      ingestionService,
     },
   };
 }

@@ -12,6 +12,10 @@
  * `signMetadataToken` (issue #58) is the async counterpart to `core`'s pure
  * `verifyMetadataTokenSignature`, living here because producing a
  * signature requires awaiting an `IdentityPort` (issue #57).
+ *
+ * This batch (Phase 3, issue #53): `IngestionService` (`./ingestion/
+ * ingestion-service.js`) — the venue-seeding/artist-publishing driving port,
+ * one operation for both framings. See that file's doc comment.
  */
 export * from "./validate-lock-request.js";
 export * from "./swap/swap-service.js";
@@ -22,3 +26,4 @@ export * from "./blob/deferred-blob-queue.js";
 export * from "./library/library-service.js";
 export * from "./identity/sign-revocation.js";
 export * from "./admin/admin-service.js";
+export * from "./ingestion/ingestion-service.js";
