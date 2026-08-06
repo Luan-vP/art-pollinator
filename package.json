@@ -19,6 +19,8 @@
     "verify:boundaries-rule": "node scripts/test-boundaries.mjs",
     "verify:web-bundle-gate-rule": "node scripts/test-web-bundle-native-imports.mjs",
     "verify:web-bundle-gate": "node scripts/check-web-bundle-native-imports.mjs clients/mobile/dist",
+    "verify:placeholder-retirement-rule": "node scripts/test-placeholder-retirement.mjs",
+    "check:placeholder-retirement": "node scripts/check-placeholder-retirement.mjs clients/mobile",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:core": "npm run test --workspace=core",

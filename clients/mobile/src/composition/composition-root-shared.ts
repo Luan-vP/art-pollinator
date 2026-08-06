@@ -13,21 +13,35 @@
  * exactly that pattern alongside the two platform-specific files.
  */
 import {
+  InMemoryBlobStorePort,
   InMemoryEncounterLogPort,
   InMemoryMetadataRepositoryPort,
   naiveAcceptPolicy,
   naiveEvictionPolicy,
   naiveOfferPolicy,
+  type BlobStorePort,
   type DiscoveryPort,
   type MetadataRepositoryPort,
   type TransportPort,
 } from "@art-pollinator/core";
-import { LibraryService, SwapActivityLog, SwapService } from "@art-pollinator/app";
+import {
+  IngestionService,
+  LibraryService,
+  SwapActivityLog,
+  SwapService,
+} from "@art-pollinator/app";
+// @placeholder-retirement:start — issue #56's retirement mechanism removes
+// this import entirely when `PLACEHOLDER_CONTENT_RETIRED` is flipped and
+// `scripts/retire-placeholder-content.mjs` is run against a real checkout.
+// ⚠️ Do NOT flip that switch until a real (non-draft) consent model from
+// issue #54 exists — see `docs/rights/consent-model-DRAFT.md` and
+// `./placeholder-retirement-switch.ts`.
 import {
   isPlaceholderSeedEnabled,
   PLACEHOLDER_METADATA_TOKENS,
   type PlaceholderSeedGateInputs,
 } from "@art-pollinator/seed-placeholder-dev";
+// @placeholder-retirement:end
 import { SystemClockPort } from "./system-clock-port";
 
 /**
@@ -50,6 +64,7 @@ import { SystemClockPort } from "./system-clock-port";
  */
 export interface SharedCompositionRootServices {
   readonly metadataRepository: MetadataRepositoryPort;
+  readonly blobStore: BlobStorePort;
   readonly libraryService: LibraryService;
   readonly swapActivityLog: SwapActivityLog;
 }
@@ -58,9 +73,34 @@ export function buildSharedServices(): SharedCompositionRootServices {
   const metadataRepository = new InMemoryMetadataRepositoryPort();
   return {
     metadataRepository,
+    // Same disclosed-gap category as `metadataRepository` above:
+    // `adapters/blob-store-filesystem` is Node-only (`node:fs` — see that
+    // package's README, "Not yet wired into the mobile composition root").
+    // A real mobile target needs an RN-specific `BlobStorePort` adapter
+    // (e.g. built on `expo-file-system`); until one lands, authored/seeded
+    // blobs on this platform live only in process memory and do not survive
+    // an app restart, same as the metadata repository above.
+    blobStore: new InMemoryBlobStorePort(),
     libraryService: LibraryService.createEmpty(metadataRepository),
     swapActivityLog: new SwapActivityLog(),
   };
+}
+
+/**
+ * Construct the real `IngestionService` for this platform (issue #53),
+ * wired against `shared.blobStore`/`shared.libraryService`. No `identity`
+ * is configured — mirroring `buildSwapService`'s own disclosed gap just
+ * below: no RN/browser `IdentityPort` adapter exists yet (issue #57 has so
+ * far only shipped a Node adapter), so pieces authored on this platform are
+ * added unsigned (see `IngestionService`'s own doc comment, "signing is
+ * optional"). `AuthoringScreen` (issue #55, `../screens/authoring-screen.tsx`)
+ * is this service's only caller so far.
+ */
+export function buildIngestionService(shared: SharedCompositionRootServices): IngestionService {
+  return new IngestionService({
+    libraryService: shared.libraryService,
+    blobStore: shared.blobStore,
+  });
 }
 
 /**
@@ -123,6 +163,11 @@ export function wireAutomaticSwap(
   });
 }
 
+// @placeholder-retirement:start — see this file's matching marker block
+// above the import statement for what flipping the retirement switch does
+// to this section (both `placeholderSeedGateInputs` and
+// `maybeSeedPlaceholderLibrary` are removed entirely, not merely made
+// unreachable — see `scripts/retire-placeholder-content.mjs`).
 /**
  * Read this build's placeholder-seed dev-flag inputs (issue #42's gate,
  * `@art-pollinator/seed-placeholder-dev`).
@@ -175,3 +220,4 @@ export function maybeSeedPlaceholderLibrary(libraryService: LibraryService): voi
     void libraryService.add(token);
   }
 }
+// @placeholder-retirement:end
