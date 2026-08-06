@@ -3,7 +3,10 @@
 Generated from the actual workspace `package.json` files and `implements` clauses on
 `main` — not hand-drawn from memory. Companion to [`../adr/0001-hexagonal-architecture.md`](../adr/0001-hexagonal-architecture.md),
 which explains *why* the codebase is shaped this way; this doc shows *what it actually
-looks like* right now.
+looks like* right now. Part of the [architecture diagram set](./README.md) — see
+[`swap-flow.md`](./swap-flow.md) for what actually flows across these dependencies,
+[`security-pipeline.md`](./security-pipeline.md) for the security gates along the way,
+and [`roadmap.md`](./roadmap.md) for how this all got built.
 
 ## 1. Workspace dependency graph
 
