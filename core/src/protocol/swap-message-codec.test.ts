@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { decodeSwapProtocolMessage, encodeSwapProtocolMessage } from "./swap-message-codec.js";
+import {
+  decodeSwapProtocolMessage,
+  DEFAULT_WIRE_PADDING_BLOCK_BYTES,
+  encodeSwapProtocolMessage,
+} from "./swap-message-codec.js";
 import { utf8Encode } from "../crypto/bytes.js";
 import {
   createAcceptMessage,
@@ -175,5 +179,89 @@ describe("swap protocol codec — version handling", () => {
     });
     const mismatch = negotiateVersion(SWAP_PROTOCOL_VERSION + 1);
     expect(mismatch.ok).toBe(false);
+  });
+});
+
+describe("swap protocol codec — wire-level padding (issue #60)", () => {
+  it("pads the encoded message up to a multiple of the default block size", () => {
+    const message = createAcceptMessage(["a".repeat(64)]);
+    const encoded = encodeSwapProtocolMessage(message);
+    expect(encoded.length % DEFAULT_WIRE_PADDING_BLOCK_BYTES).toBe(0);
+  });
+
+  it.each([1, 50, 300, 4_000])(
+    "pads to a multiple of a custom block size (%i bytes) without corrupting content",
+    (blockBytes) => {
+      const token = makeToken({ description: fillerText(700) });
+      const message = createOfferMessage([token]);
+      const encoded = encodeSwapProtocolMessage(message, { padToBlockBytes: blockBytes });
+      expect(encoded.length % blockBytes).toBe(0);
+      const decoded = decodeSwapProtocolMessage(encoded);
+      expect(decoded).toEqual(message);
+    },
+  );
+
+  it("padToBlockBytes: 0 disables padding entirely — matches raw canonical bytes", () => {
+    const message = createAcceptMessage(["b".repeat(64)]);
+    const unpadded = encodeSwapProtocolMessage(message, { padToBlockBytes: 0 });
+    expect(unpadded.length % DEFAULT_WIRE_PADDING_BLOCK_BYTES).not.toBe(0);
+    expect(decodeSwapProtocolMessage(unpadded)).toEqual(message);
+  });
+
+  it("a message that already lands exactly on a block boundary gets zero extra padding", () => {
+    const message = createAcceptMessage(["c".repeat(64)]);
+    // `padToBlockBytes: 1` never needs any padding chars (every length is a
+    // multiple of 1) — this is exactly the message's real encoded length
+    // including the (empty) padding field's own fixed overhead.
+    const baseLength = encodeSwapProtocolMessage(message, { padToBlockBytes: 1 }).length;
+    // Using that exact length as the block size means the message is
+    // already precisely one block long — no room for an "add a byte,
+    // round up regardless" bug to hide.
+    const padded = encodeSwapProtocolMessage(message, { padToBlockBytes: baseLength });
+    expect(padded.length).toBe(baseLength);
+  });
+
+  it("two structurally different messages that happen to land in the same size bucket produce identically-sized wire output", () => {
+    // The whole point of bucketing (docs/adr/0016): an observer sees the
+    // bucket, not the exact byte count that would otherwise distinguish
+    // "title A, no description" from "title B, short description".
+    const short = createOfferMessage([makeToken({ title: "A" })]);
+    const slightlyLonger = createOfferMessage([makeToken({ title: "A slightly longer title" })]);
+    const blockBytes = 4_096; // large enough that both fall in the same bucket
+    expect(encodeSwapProtocolMessage(short, { padToBlockBytes: blockBytes }).length).toBe(
+      encodeSwapProtocolMessage(slightlyLonger, { padToBlockBytes: blockBytes }).length,
+    );
+  });
+
+  it("round-trips every message kind, at realistic sizes, with default padding on — proving padding never corrupts real content", () => {
+    const messages: SwapProtocolMessage[] = [
+      createDiscoverAckMessage("node"),
+      createOfferMessage([
+        makeToken({ description: fillerText(50) }),
+        makeToken({ description: fillerText(3_000) }),
+      ]),
+      createAcceptMessage(["a".repeat(64), "b".repeat(64)]),
+      createTransferMessage([makeToken()]),
+      createReconcileAckMessage(["c".repeat(64)]),
+      createRevocationMessage([
+        {
+          contentHash: "a".repeat(64),
+          revokedAtEpochMs: 12_345,
+          signerPublicKey: "cd".repeat(32),
+          signature: "ab".repeat(64),
+        },
+      ]),
+    ];
+    for (const message of messages) {
+      const encoded = encodeSwapProtocolMessage(message);
+      expect(encoded.length % DEFAULT_WIRE_PADDING_BLOCK_BYTES).toBe(0);
+      expect(decodeSwapProtocolMessage(encoded)).toEqual(message);
+    }
+  });
+
+  it("rejects a negative or non-integer padToBlockBytes", () => {
+    const message = createAcceptMessage([]);
+    expect(() => encodeSwapProtocolMessage(message, { padToBlockBytes: -1 })).toThrow();
+    expect(() => encodeSwapProtocolMessage(message, { padToBlockBytes: 1.5 })).toThrow();
   });
 });

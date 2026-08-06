@@ -192,6 +192,20 @@
  *   items_rejected_oversized`, ...) — issue #52's explicit ask that these
  *   be visible to an operator, not just internally tracked.
  *
+ * ## Design: trust tracking, layered on top of the above (issue #59)
+ *
+ * `trustTracker` is a fifth optional dependency in the same "skip,
+ * unchanged behaviour" family. Where the four above react *within* one
+ * `swap()` call, `trustTracker` accumulates *across* calls: every
+ * `"throttled"`/`"rejectedContent"` outcome above, and every completed
+ * swap's reciprocal-or-not shape, is fed into it, and `AcceptPolicy`
+ * itself is wrapped (`createTrustAdjustedAcceptPolicy`) with whatever
+ * ceiling that history currently earns. See `SwapServiceDeps.trustTracker`'s
+ * doc comment for the full design and — because this is exactly the kind
+ * of decision AGENTS.md §3 asks to be flagged, not buried — the privacy
+ * tension it deliberately resolves by restricting itself to
+ * `peer.kind === "node"`.
+ *
  * ## Design: an optional `SwapActivityLog` records every completed swap
  *
  * Issue #38's swap screen needs to "show incoming swap activity as it
@@ -211,6 +225,7 @@ import {
   createAcceptMessage,
   createOfferMessage,
   createRevocationMessage,
+  createTrustAdjustedAcceptPolicy,
   decodeSwapProtocolMessage,
   encodeSwapProtocolMessage,
   filterSuppressedCandidates,
@@ -244,6 +259,7 @@ import {
   type SwapState,
   type SwapTransitionResult,
   type TransportPort,
+  type TrustTracker,
 } from "@art-pollinator/core";
 import type { SwapActivityLog } from "./swap-activity-log.js";
 
@@ -311,6 +327,38 @@ export interface SwapServiceDeps {
    * per attempt costs more than a free string.
    */
   readonly swapRateLimiter?: SlidingWindowRateLimiter;
+  /**
+   * Longer-lived, per-identity trust bookkeeping (issue #59 —
+   * `@art-pollinator/core`'s `TrustTracker`, see that module's doc comment
+   * for the full design). Where `swapRateLimiter` above only remembers a
+   * peer's behaviour within one trailing window, this survives *across*
+   * windows: a peer that keeps getting throttled or failing content
+   * validation every single window pays a compounding cost via
+   * `AcceptPolicy` being wrapped
+   * (`createTrustAdjustedAcceptPolicy`) with an ever-shrinking accept
+   * ceiling, while a peer with a track record of genuinely reciprocal
+   * (non-one-way) swaps keeps the naive default's full "accept what fits"
+   * ceiling — see this file's own doc comment section "rate limiting,
+   * ingest validation, revocation, and logging" for how the other
+   * security dependencies are layered on, which this one now joins.
+   *
+   * ⚠️ **Deliberately scoped to `peer.kind === "node"` only, never
+   * `"person"`.** `TrustTracker`'s own doc comment names the privacy
+   * tension plainly: it is peer-scoped, longer-lived memory of exactly the
+   * kind AGENTS.md §7 / SPEC.md §7 rule out for people, who use rotating
+   * ephemeral identities specifically so history cannot accumulate against
+   * them. A node's identity is persistent *by design* (SPEC.md §4), so
+   * trust history against it does not carry that same cost. This method
+   * therefore never calls `trustTracker.recordOutcome`/
+   * `acceptCapacityFraction` for a `person` peer, regardless of whether
+   * this dependency is configured — see `docs/adr/0017-trust-tracker-scoped-to-node-identities.md`
+   * for the full reasoning and the alternatives rejected, and this batch's
+   * PR description (AGENTS.md §3: flagged prominently, not buried).
+   *
+   * Omit to skip trust tracking entirely (default; keeps existing
+   * callers/tests unchanged).
+   */
+  readonly trustTracker?: TrustTracker;
   /**
    * This device's record of known moderation takedowns (issue #51). When
    * supplied, `swap()` exchanges a `revocation` round with the peer before
@@ -449,6 +497,7 @@ export class SwapService {
       evictionPolicy,
       signatureVerifier,
       swapRateLimiter,
+      trustTracker,
       revocationLog,
       logger,
     } = this.deps;
@@ -456,6 +505,14 @@ export class SwapService {
       this.deps.encounterSuppressionWindowMs ?? DEFAULT_ENCOUNTER_SUPPRESSION_WINDOW_MS;
     const receiveTimeoutMs = this.deps.receiveTimeoutMs ?? DEFAULT_RECEIVE_TIMEOUT_MS;
     const libraryCapacity = this.deps.libraryCapacity ?? DEFAULT_LIBRARY_CAPACITY;
+
+    // Issue #59, `SwapServiceDeps.trustTracker`'s doc comment: trust
+    // tracking is deliberately scoped to `peer.kind === "node"` only — a
+    // node's identity is persistent by design (SPEC.md §4), whereas a
+    // person's is designed to rotate (SPEC.md §7). This one boolean is the
+    // enforcement point for that scoping decision; every trust-tracker
+    // call below is gated on it.
+    const trustTrackingApplies = Boolean(trustTracker) && peer.kind === "node";
 
     let state = createInitialSwapState();
     logger?.log({ event: "swap.started", peerId: peer.address.id, peerKind: peer.kind });
@@ -476,6 +533,12 @@ export class SwapService {
             countInWindow: decision.countInWindow,
             limit: decision.limit,
           });
+          // Issue #59: a throttled attempt is exactly the "bad interaction"
+          // `TrustTracker` compounds across windows — see this file's
+          // `SwapServiceDeps.trustTracker` doc comment.
+          if (trustTrackingApplies) {
+            trustTracker?.recordOutcome(peer.address.id, "throttled", clock.now());
+          }
           throw new Error(
             `SwapService: peer "${peer.address.id}" exceeded the swap-attempt rate limit ` +
               `(${String(decision.countInWindow)} attempts, limit ${String(decision.limit)}).`,
@@ -574,6 +637,12 @@ export class SwapService {
           peerId: peer.address.id,
           count: rejectedOversizedItems.length,
         });
+        // Issue #59: an oversized item is protocol-level abuse, the same
+        // "bad interaction" category as a rate-limit throttle — see this
+        // file's `SwapServiceDeps.trustTracker` doc comment.
+        if (trustTrackingApplies) {
+          trustTracker?.recordOutcome(peer.address.id, "rejectedContent", now);
+        }
       }
 
       // --- Signature verification (issue #58): drop unsigned/tampered items
@@ -582,13 +651,26 @@ export class SwapService {
       const { verified: verifiedOffer, rejected: rejectedUnverified } = signatureVerifier
         ? partitionBySignature(sizeValidatedOffer, signatureVerifier)
         : { verified: sizeValidatedOffer, rejected: [] as readonly Item[] };
+      if (rejectedUnverified.length > 0 && trustTrackingApplies) {
+        // Issue #59: an unsigned/tampered item is likewise a bad interaction.
+        trustTracker?.recordOutcome(peer.address.id, "rejectedContent", now);
+      }
 
       // --- Moderation filter (issue #51): never (re-)accept content this
       // device already knows is revoked, even if the peer still offers it. ---
       const peerOffer = verifiedOffer.filter((item) => !knownRevokedHashes.has(item.contentHash));
 
-      // --- Accept step ---
-      const acceptedBeforeHop = acceptPolicy.selectAccept(peerOffer, workingLibrary);
+      // --- Accept step (issue #59: AcceptPolicy is wrapped with a
+      // trust-adjusted ceiling for node identities with a history of bad
+      // interactions — see `SwapServiceDeps.trustTracker`'s doc comment). ---
+      const effectiveAcceptPolicy = trustTrackingApplies
+        ? createTrustAdjustedAcceptPolicy(
+            acceptPolicy,
+            trustTracker?.acceptCapacityFraction(peer.address.id, now) ?? 1,
+            libraryCapacity.swappableSlots,
+          )
+        : acceptPolicy;
+      const acceptedBeforeHop = effectiveAcceptPolicy.selectAccept(peerOffer, workingLibrary);
 
       await transport.send(
         peer.address,
@@ -654,6 +736,19 @@ export class SwapService {
       }
       for (const item of evicted) {
         await encounterLog.record(item.contentHash, "evicted", now);
+      }
+
+      // --- Issue #59: only a genuinely *reciprocal* swap (both sides sent
+      // something) builds trust — a one-way encounter, in either
+      // direction, is left neutral. See `TrustTracker`'s doc comment
+      // ("only reciprocal swaps build trust") for why: crediting a
+      // one-way encounter would let a flooder farm trust for free on
+      // encounters that never touch AcceptPolicy's rejection path, then
+      // spend it on a later burst. ---
+      if (trustTrackingApplies) {
+        const outcomeKind =
+          sent.length > 0 && accepted.length > 0 ? "reciprocalSwap" : "oneWaySwap";
+        trustTracker?.recordOutcome(peer.address.id, outcomeKind, now);
       }
 
       const outcome: SwapOutcome = {

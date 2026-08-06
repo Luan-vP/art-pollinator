@@ -44,9 +44,12 @@
  * recorded." This environment has no physical device and no BLE radio (see
  * `docs/spikes/0028-background-ble-feasibility.md`'s own method section) —
  * there is no honest way to produce a real battery-drain number here, and
- * this file does not fabricate one. That measurement is a real-device
- * follow-up (tracked against issue #61, non-functional budgets), the same
- * gap this codebase already discloses for BLE hardware verification
+ * this file does not fabricate one. `docs/battery-cost-estimate.md`
+ * (issue #61) computes a theoretical, duty-cycle-weighted estimate from
+ * this file's own `DEFAULT_SCAN_SCHEDULE_CONFIG` and published BLE
+ * power-consumption figures — clearly labeled as an estimate, not a
+ * measurement. Real-device measurement remains the actual follow-up, the
+ * same gap this codebase already discloses for BLE hardware verification
  * generally.
  */
 import type { ClockPort, SchedulerHandle, SchedulerPort } from "@art-pollinator/core";

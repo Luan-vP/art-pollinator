@@ -35,7 +35,7 @@ export function validateCapacityBounds(
   capacity: LibraryCapacity,
   maxTotalSlots: number,
 ): CapacityBoundsResult {
-  const { maxLockableSlots, swappableSlots } = capacity;
+  const { maxLockableSlots, swappableSlots, maxTotalBytes } = capacity;
   if (!Number.isInteger(maxLockableSlots) || maxLockableSlots < 0) {
     return {
       ok: false,
@@ -59,6 +59,12 @@ export function validateCapacityBounds(
     return {
       ok: false,
       error: "requested capacity is zero — a library must hold at least one slot.",
+    };
+  }
+  if (maxTotalBytes !== undefined && (!Number.isFinite(maxTotalBytes) || maxTotalBytes <= 0)) {
+    return {
+      ok: false,
+      error: `maxTotalBytes must be a positive number when provided, got ${String(maxTotalBytes)}.`,
     };
   }
   return { ok: true };

@@ -34,6 +34,14 @@
  * `LoggerPort` (structured observability events, issue #52), and
  * `./library/library-capacity-bounds.js` (the shared bounds check behind
  * `AdminService`'s runtime capacity changes, issue #50).
+ *
+ * This batch (Cross-cutting, #59/#60/#61): `./security/trust-tracker.js`
+ * (a longer-lived, per-identity trust signal layered on top of the rate
+ * limiter — see that module's doc comment for the privacy tension it
+ * flags and resolves), a wire-level padding scheme in
+ * `./protocol/swap-message-codec.js` (#60's metadata-uniformity review),
+ * and an optional aggregate byte budget on `./library/library.js`'s
+ * `LibraryCapacity` (#61, alongside the existing slot-count cap).
  */
 export * from "./constants.js";
 export * from "./priority/priority.js";
@@ -61,4 +69,5 @@ export * from "./security/rate-limiter.js";
 export * from "./security/peer-auth.js";
 export * from "./security/ingest-validation.js";
 export * from "./security/revocation.js";
+export * from "./security/trust-tracker.js";
 export * from "./library/library-capacity-bounds.js";
