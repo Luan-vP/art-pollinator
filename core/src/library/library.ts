@@ -33,7 +33,7 @@
  */
 
 import { MAX_LOCKABLE_SLOTS, SWAPPABLE_SLOTS } from "../constants.js";
-import type { MetadataToken } from "../metadata/metadata-token.js";
+import { metadataTokenByteSize, type MetadataToken } from "../metadata/metadata-token.js";
 import { toPriority, type Priority } from "../priority/priority.js";
 
 /**
@@ -94,10 +94,34 @@ export const EMPTY_LIBRARY: Library = { entries: new Map() };
  * configurable *value* on the one `Library` aggregate rather than a second
  * aggregate type, and `clients/node`'s `node-capacity.ts` for the node's
  * actual default and upper bound.
+ *
+ * `maxTotalBytes` (issue #61, non-functional budgets) is a third,
+ * independent cap: the slot-count caps above bound how many *items* a
+ * library holds, but `MetadataToken`s vary somewhat in size even under the
+ * shared ~5 KB-per-token ceiling (AGENTS.md §6) — see
+ * `docs/adr/0016-metadata-uniformity-vs-provenance.md`'s measured 328–4,374
+ * byte range. Ten tokens near the top of that range is a meaningfully
+ * different on-disk footprint than ten near the bottom, and a device may
+ * want to budget total storage independent of how many slots that
+ * happens to fill. Optional and `undefined` by default — every existing
+ * call site that doesn't pass it keeps exactly its current behaviour,
+ * the same pattern `swappableSlots`/`maxLockableSlots` already established
+ * in ADR-0012.
  */
 export interface LibraryCapacity {
   readonly maxLockableSlots: number;
   readonly swappableSlots: number;
+  /** Optional aggregate byte budget across every item currently held (both pools) — see this interface's doc comment. `undefined` means "no byte budget enforced," the default. */
+  readonly maxTotalBytes?: number;
+}
+
+/** Sum of every held item's serialised size, in bytes (both pools) — issue #61's non-functional byte budget. See {@link LibraryCapacity.maxTotalBytes}. */
+export function libraryByteSize(library: Library): number {
+  let total = 0;
+  for (const entry of library.entries.values()) {
+    total += metadataTokenByteSize(entry.token);
+  }
+  return total;
 }
 
 /** The phone's fixed capacity (AGENTS.md §6) — the default every call site in this file already had before {@link LibraryCapacity} existed. */
@@ -153,6 +177,17 @@ export function hasContentHash(library: Library, contentHash: string): boolean {
  * cross-batch note on {@link LibraryEntry}. Callers that have already
  * scored the item via a `PriorityPolicy` (e.g. on ingest, once that call
  * site exists) may pass the result through directly.
+ *
+ * When `capacity.maxTotalBytes` is configured (issue #61), an add is also
+ * rejected if it would push the library's aggregate byte footprint
+ * (`libraryByteSize`, both pools) over that budget — **independently of**
+ * the slot-count check above: a library with free swappable slots can
+ * still reject an add on byte-budget grounds alone, and (symmetrically) a
+ * library within its byte budget can still reject an add because its slot
+ * count is full. Checked after the slot-count check purely for a cheaper
+ * fail-fast ordering (slot count is an O(1) comparison; the byte check
+ * sums every held item's size) — both checks are equally authoritative,
+ * neither takes precedence in what it protects.
  */
 export function addItem(
   library: Library,
@@ -169,6 +204,16 @@ export function addItem(
       ok: false,
       error: `Cannot add item: swappable pool is full (${String(capacity.swappableSlots)}/${String(capacity.swappableSlots)} slots occupied).`,
     };
+  }
+
+  if (capacity.maxTotalBytes !== undefined) {
+    const projectedBytes = libraryByteSize(library) + metadataTokenByteSize(token);
+    if (projectedBytes > capacity.maxTotalBytes) {
+      return {
+        ok: false,
+        error: `Cannot add item: would exceed the library's total byte budget (${String(projectedBytes)} > ${String(capacity.maxTotalBytes)} bytes).`,
+      };
+    }
   }
 
   const nextEntries = new Map(library.entries);
