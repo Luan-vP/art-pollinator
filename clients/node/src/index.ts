@@ -49,7 +49,7 @@ import { createNodeCompositionRoot } from "./composition/composition-root.js";
 async function main(): Promise<void> {
   const config = readConfigFromEnv();
   const root = await createNodeCompositionRoot(config);
-  const { baseUrl, transportPort } = await root.start();
+  const { baseUrl, transportPort, adminBaseUrl } = await root.start();
 
   // A single structured line on startup — parsed by
   // `e2e-client-node-swap.test.ts` when it spawns this file as a real child
@@ -61,9 +61,11 @@ async function main(): Promise<void> {
       baseUrl,
       transportPort,
       discoveryPort: config.discoveryPort,
+      adminBaseUrl,
       host: config.host,
       capacity: config.capacity,
       dbPath: config.dbPath,
+      tlsEnabled: config.tlsEnabled,
     }),
   );
 

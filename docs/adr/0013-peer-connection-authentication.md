@@ -1,0 +1,44 @@
+# ADR-0013: Connection-level authentication via a challenge-response handshake; presenting _some_ valid signature authenticates a connection, an inability to sign at all is rejected outright
+
+**Status:** Accepted
+**Date:** 2026-08-06
+
+> ⚠️ **Flagged per AGENTS.md §3:** this decision affects identity persistence and trust — a category the working agreement asks to be called out prominently rather than buried. It determines what it means for a node to "know who it's talking to," which is foundational to every other security mechanism in this batch.
+
+## Context
+
+Issue #58 already gives every `MetadataToken` a signature, and issue #49's brief is explicit that "signing a token isn't the same as authenticating a _connection_." Before this batch, `HttpTransportServer` had no concept of connection identity at all: `x-peer-id` (POST) and `?peer=` (GET long-poll) were bare, self-asserted strings — nothing checked that whoever sent a request actually controlled the identity it claimed. Two concrete consequences: (1) any HTTP client could attempt a full swap regardless of whether it held any cryptographic identity at all, and (2) a client could long-poll `?peer=<anyone>`'s inbox and receive messages meant for a different identity entirely — a real information-disclosure hole, not a hypothetical one.
+
+SPEC.md §7 constrains the design space: nodes have persistent identities, but **people use rotating ephemeral identities**, and anonymous person-to-person swaps are an explicit, permitted use case. Any authentication scheme that rejects "an identity we've never seen before" would break this outright. The question this ADR settles: what does "authenticated" mean in a system that must accept total strangers by design?
+
+## Decision
+
+A real challenge-response handshake, and a trust rule stated precisely:
+
+**A connection must present _some_ valid signature to proceed at all. A signature valid for _any_ claimed keypair — including one generated moments ago — authenticates that connection as "controlled by whoever holds that key." A connection that cannot produce a valid signature is rejected outright.**
+
+Concretely:
+
+1. **`POST /handshake/challenge`** (`adapters/transport-http/src/http-transport-server.ts`): a peer requests a challenge, identified by its self-asserted `x-peer-id`. The server generates a fresh, unpredictable 32-byte nonce (`node:crypto.randomBytes`) and remembers it, tied to that peer id, with a short TTL (default 30s).
+2. **`POST /handshake/response`**: the peer signs the exact nonce bytes with its own identity key and submits `{ publicKey, signature }`. The server verifies (`core`'s `verifyChallengeResponse`, delegating to the same `SignatureVerifierPort`/`NodeSignatureVerifier` that already verifies token signatures) that the signature is valid _for the claimed public key, over the exact nonce issued_. On success, the peer id is marked authenticated for a bounded session (default 10 minutes); the nonce is consumed either way (single-use, closing a replay vector).
+3. **`POST`/`GET /messages`** both now require an unexpired authenticated session for the peer id in question — an unauthenticated request to either gets `401`.
+4. **No allow-list, no "known identities only."** The server never checks the claimed public key against any prior record. A keypair generated one second before the handshake authenticates exactly as well as one that has swapped with this node a thousand times. This is the direct, deliberate consequence of SPEC.md §7: the _cryptographic_ guarantee ("you control a private key") is orthogonal to the _reputational_ question ("should I trust this specific key"), and this handshake only ever answers the first.
+5. **Differential trust is layered on top, not built into the handshake.** `SwapService`'s rate limiter and a future reputation system (see the threat model's "open questions") are where "how much do I trust this specific, possibly-brand-new identity" gets decided — by throttling, not by refusing to talk to it at all. The handshake's only job is "prove you hold a key," full stop.
+
+This directly implements the task brief's own suggested resolution: _"the connection must present some valid signed identity, even if it's a fresh rotating one we've never seen, but a connection that can't produce a valid signature at all is rejected."_
+
+## Alternatives considered and rejected
+
+- **Reject unknown/unrecognized identities outright (an allow-list or pre-shared-key model).** Rejected: this directly contradicts SPEC.md §7's rotating ephemeral identities for people and SPEC.md §6.3's anonymous one-way seeding. A node that only accepted known identities could never onboard a first-time visitor — the opposite of a venue-based, place-driven network's actual purpose.
+- **No connection-level authentication at all; rely solely on per-token signatures (issue #58).** Rejected: this is precisely the gap the task brief calls out — a token's signature proves who authored _that content_, never who is on the other end of _this socket_. It does nothing to stop a stranger from opening the connection in the first place, attempting a flood, or reading another peer's long-poll queue.
+- **Mutual TLS client certificates as the authentication mechanism, instead of an application-level handshake.** Rejected for this batch: mTLS would conflate transport security and identity in a way that's harder to reason about independently, requires every client (including the browser/RN targets, which cannot easily manage client certificates) to participate, and doesn't compose cleanly with SPEC.md §7's rotation requirement (a rotating identity would need a rotating client cert, re-issued somehow). An application-level, signature-based handshake reuses machinery (`SignatureVerifierPort`, `IdentityPort`) this codebase already has and needs for content signing regardless, and is transport-independent (the same design could apply over BLE if a future batch wires it there).
+- **A shared secret / pairing code (a "type in this PIN to connect" model), the literal meaning of "pairing" in some other IoT contexts.** Rejected: this requires an out-of-band channel (a screen to display a code, a human to type it) that does not exist for an anonymous street encounter or a venue visitor who has never met the node operator. It would work for a deliberate, planned pairing (two friends' phones) but not for SPEC.md's primary use case (a stranger swapping with a venue's node), so it was not chosen as the _general_ mechanism — nothing precludes a future, additional pairing flow for a _different_ trust tier later.
+- **Reject if the connection cannot be authenticated, with no fallback of "allowed but low-trust."** Rejected as the default behavior for _unauthenticated_ connections (they are rejected outright — see the trust rule above), but this alternative is really asking whether an _authenticated-but-brand-new_ identity should get reduced trust automatically at the handshake layer. That distinction is deliberately _not_ made here — see point 5 above — because the handshake is the wrong layer to encode "how much do I trust you," which is a reputation/behavior question the rate limiter (issue #49) and a future trust model (SPEC.md §11 open question 6) are better positioned to answer with actual behavioral signal, not a one-time cryptographic check.
+
+## Consequences
+
+- Every real deployment of `clients/node`'s composition root now requires authentication unconditionally (`security` is always configured — see `composition-root.ts`'s doc comment) — there is no environment variable to turn it off, unlike TLS (ADR-0014), because authentication costs a legitimate peer nothing (one extra round trip, a signature it can already produce) while closing a real hole, whereas TLS has a genuine cross-platform compatibility cost today.
+- `HttpTransportClient` (`adapters/transport-http`) gained an optional `identity` constructor option that performs this handshake automatically before any `/messages` traffic — any composition root (mobile, node-to-node) can opt in with one line, and omitting it remains fully backward compatible against a server that has no `security` configured.
+- `e2e-client-node-swap.test.ts` was updated to authenticate its test client — proving the mechanism works against a real, separately-spawned OS process, not only in isolated adapter tests.
+- A Sybil attacker still authenticates for free (this is a stated, accepted consequence of supporting anonymous identities at all) — the threat model (`docs/security/threat-model.md` §3.1) names this explicitly and pairs it with an IP-keyed limiter that does cost such an attacker something.
+- This is authentication of a _connection episode_, not end-to-end encryption of the messages on it — see ADR-0014 for what TLS adds on top and why it is scoped separately.

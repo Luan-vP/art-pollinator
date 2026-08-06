@@ -6,12 +6,14 @@ import {
   createDiscoverAckMessage,
   createOfferMessage,
   createReconcileAckMessage,
+  createRevocationMessage,
   createTransferMessage,
   negotiateVersion,
   SWAP_PROTOCOL_VERSION,
   type SwapProtocolMessage,
 } from "./swap-message.js";
 import type { MetadataToken } from "../metadata/metadata-token.js";
+import type { RevocationEntry } from "../security/revocation.js";
 
 function fillerText(length: number): string {
   const base = "Study for a coastline at dusk, oil and pigment on reclaimed canvas. ";
@@ -71,6 +73,17 @@ describe("swap protocol codec — round-trip, one per message kind (issue #22/#2
   it("reconcile-ack round-trips", () => {
     roundTrip(createReconcileAckMessage(["c".repeat(64)]));
   });
+
+  it("revocation round-trips (issue #51)", () => {
+    const entry: RevocationEntry = {
+      contentHash: "a".repeat(64),
+      revokedAtEpochMs: 12_345,
+      signerPublicKey: "cd".repeat(32),
+      signature: "ab".repeat(64),
+    };
+    roundTrip(createRevocationMessage([entry]));
+    roundTrip(createRevocationMessage([])); // nothing known yet
+  });
 });
 
 describe("swap protocol codec — edge cases (issue #24 explicit requirement)", () => {
@@ -117,7 +130,7 @@ describe("swap protocol codec — edge cases (issue #24 explicit requirement)", 
     const messageB = {
       kind: "accept",
       body: { acceptedContentHashes: ["x".repeat(64)] },
-      version: 1,
+      version: SWAP_PROTOCOL_VERSION,
     } as const;
     expect(encodeSwapProtocolMessage(messageA)).toEqual(encodeSwapProtocolMessage(messageB));
   });

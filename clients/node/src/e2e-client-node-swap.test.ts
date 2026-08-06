@@ -63,6 +63,7 @@ import {
   InMemoryClockPort,
   InMemoryEncounterLogPort,
   InMemoryMetadataRepositoryPort,
+  InMemoryRevocationLogPort,
   addItem,
   naiveAcceptPolicy,
   naiveEvictionPolicy,
@@ -242,7 +243,24 @@ describe("end-to-end: client ↔ node, over a real spawned OS process and real H
     // client's: real `HttpTransportClient`, naive policies, an in-memory
     // repository (matching the mobile composition root's own disclosed gap
     // — no RN-persistent repository exists yet either). ---
-    const clientTransport = new HttpTransportClient({ selfAddress: { id: "e2e-test-client" } });
+    // The node process now always requires connection-level authentication
+    // (issue #49 — `composition/composition-root.ts`'s `security` option is
+    // unconditional) — this client authenticates automatically, by the same
+    // real Ed25519 identity it also uses to sign its content below, via
+    // `HttpTransportClient`'s `identity` option (that class's own doc
+    // comment on the client half of the challenge-response handshake).
+    // Without `identity` here, every `/messages` call below would 401
+    // before ever reaching the swap protocol — proving this test really
+    // exercises the real authentication path, not one that happens to be
+    // bypassable.
+    const clientIdentity = new NodeIdentityAdapter({
+      mode: "person",
+      storageDir: join(dbDir, "client-identity"),
+    });
+    const clientTransport = new HttpTransportClient({
+      selfAddress: { id: "e2e-test-client" },
+      identity: clientIdentity,
+    });
 
     // The node process was wired with a real `NodeSignatureVerifier`
     // (`composition/composition-root.ts`) — genuine reuse of already-shipped
@@ -250,15 +268,9 @@ describe("end-to-end: client ↔ node, over a real spawned OS process and real H
     // the server trivially wide open where it costs nothing to avoid"
     // brief. That means an *unsigned* token is correctly rejected before
     // the node's `AcceptPolicy` ever sees it — proving this test's items
-    // really cross that check (not skip it), they are signed here with a
-    // real Ed25519 identity (`NodeIdentityAdapter`, the same adapter class
-    // the node itself would use to sign its own content in a future
-    // authoring flow), not `core`'s deterministic-but-fake
+    // really cross that check (not skip it), they are signed here with the
+    // same real Ed25519 identity, not `core`'s deterministic-but-fake
     // `InMemoryIdentityPort`, which a real Ed25519 verifier would reject.
-    const clientIdentity = new NodeIdentityAdapter({
-      mode: "person",
-      storageDir: join(dbDir, "client-identity"),
-    });
     const signedItems = await Promise.all(
       ["e2e-piece-one", "e2e-piece-two"].map((hash) =>
         signMetadataToken(token(hash), clientIdentity),
@@ -279,6 +291,14 @@ describe("end-to-end: client ↔ node, over a real spawned OS process and real H
       offerPolicy: naiveOfferPolicy,
       acceptPolicy: naiveAcceptPolicy,
       evictionPolicy: naiveEvictionPolicy,
+      // The node's own reactive SwapService always configures a
+      // `revocationLog` (issue #51 — `composition/composition-root.ts`),
+      // which adds a `revocation` round to the wire exchange (see
+      // `app/src/swap/swap-service.ts`'s doc comment: "both sides of a
+      // swap must agree on whether this is configured"). This client
+      // configures one too so its protocol expectations match the real
+      // node it's dialling into.
+      revocationLog: new InMemoryRevocationLogPort(),
     });
 
     // --- The real swap, over the real socket, against the real separate

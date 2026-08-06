@@ -9,6 +9,8 @@ function outcome(overrides: Partial<SwapOutcome> = {}): SwapOutcome {
     sent: [],
     accepted: [],
     rejectedUnverified: [],
+    rejectedOversized: [],
+    revoked: [],
     evicted: [],
     state: { phase: "completed", peerKind: "person", sent: [], received: [], evicted: [] },
     ...overrides,

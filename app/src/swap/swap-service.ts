@@ -164,6 +164,34 @@
  * repository-write ordering above are what those guarantees actually rest
  * on, not the receive queue's long-term hygiene.
  *
+ * ## Design: rate limiting, ingest validation, revocation, and logging (issues #49/#51/#52)
+ *
+ * Four more optional dependencies, all defaulting to "skip, unchanged
+ * behaviour" so every existing caller/test is unaffected:
+ *
+ * - `swapRateLimiter` is checked once, at the very top of `swap()` —
+ *   before any transport round trip, `AcceptPolicy` call, or repository
+ *   access — so a peer past its limit is aborted at essentially zero cost
+ *   to this device (issue #49, SPEC.md §5's "AcceptPolicy is a security
+ *   control" finally enforced with real throttling, not just "accept what
+ *   fits").
+ * - Every inbound `offer` is passed through `core`'s `validateOfferItems`
+ *   before signature verification or `AcceptPolicy` ever see it: an
+ *   implausibly large item count aborts the swap outright, and individual
+ *   oversized items are dropped (issue #49 — content validation on
+ *   ingest).
+ * - `revocationLog`, when configured on both sides, adds a `revocation`
+ *   round before the offer/accept steps (issue #51) — see this file's
+ *   `SwapServiceDeps.revocationLog` doc comment and `core/src/security/
+ *   revocation.ts` for the full opportunistic-gossip design, and
+ *   `app/src/swap/revocation-propagation.test.ts` for the offline-device
+ *   scenario it's built to satisfy.
+ * - `logger` emits one structured event per lifecycle transition (`swap.
+ *   started`/`negotiated`/`transferred`/`reconciled`/`aborted`) plus the
+ *   security events above (`security.rate_limited`, `security.
+ *   items_rejected_oversized`, ...) — issue #52's explicit ask that these
+ *   be visible to an operator, not just internally tracked.
+ *
  * ## Design: an optional `SwapActivityLog` records every completed swap
  *
  * Issue #38's swap screen needs to "show incoming swap activity as it
@@ -182,14 +210,18 @@ import {
   createInitialSwapState,
   createAcceptMessage,
   createOfferMessage,
+  createRevocationMessage,
   decodeSwapProtocolMessage,
   encodeSwapProtocolMessage,
   filterSuppressedCandidates,
   incrementHopCount,
+  isRevocationAuthorizedForToken,
   removeItem,
   toPriority,
   transition,
+  validateOfferItems,
   verifyMetadataTokenSignature,
+  verifyRevocationEntrySignature,
   DEFAULT_ENCOUNTER_SUPPRESSION_WINDOW_MS,
   DEFAULT_LIBRARY_CAPACITY,
   type AcceptPolicy,
@@ -202,10 +234,13 @@ import {
   type Library,
   type LibraryCapacity,
   type LibraryOperationResult,
+  type LoggerPort,
   type MetadataRepositoryPort,
   type OfferPolicy,
   type PeerAddress,
+  type RevocationLogPort,
   type SignatureVerifierPort,
+  type SlidingWindowRateLimiter,
   type SwapState,
   type SwapTransitionResult,
   type TransportPort,
@@ -249,6 +284,57 @@ export interface SwapServiceDeps {
    * wired consistently.
    */
   readonly libraryCapacity?: LibraryCapacity;
+  /**
+   * Rate-limits swap *attempts* per peer (issue #49 — the concrete teeth
+   * behind SPEC.md §5's "AcceptPolicy is a security control... accept-side
+   * filtering and rate limiting are the primary defence against a flooding
+   * peer"). Checked once, at the very start of `swap()`, keyed by
+   * `peer.address.id` — before any transport round trip, any policy call,
+   * or any repository access. A peer past its limit is aborted immediately
+   * (via the same `ABORT` path issue #47 already established), so a
+   * flooding peer's excess attempts never reach `AcceptPolicy` or touch
+   * this device's repository at all. Omit to skip rate limiting entirely
+   * (default; keeps existing callers/tests unchanged) — a production
+   * composition root should always supply one, most usefully one shared
+   * across every `swap()` call this device makes (not a fresh limiter per
+   * call, which would defeat the point).
+   *
+   * **Disclosed limitation:** keying by `peer.address.id` — the only peer
+   * identifier available at the *start* of a swap, before any
+   * authentication has happened — means a peer that can mint fresh
+   * transport-level ids for free (trivial over this codebase's HTTP
+   * transport, since `x-peer-id` is a bare self-asserted string) can evade
+   * this specific limiter by rotating ids. `docs/security/threat-model.md`
+   * names this residual Sybil risk explicitly and pairs it with a
+   * *connection*-level (IP-based) limiter in `HttpTransportServer`
+   * (`adapters/transport-http`) as defense in depth — a real TCP connection
+   * per attempt costs more than a free string.
+   */
+  readonly swapRateLimiter?: SlidingWindowRateLimiter;
+  /**
+   * This device's record of known moderation takedowns (issue #51). When
+   * supplied, `swap()` exchanges a `revocation` round with the peer before
+   * negotiating (send this device's `listAll()`, merge whatever the peer
+   * sends back), immediately removes any now-revoked item this device
+   * currently holds, and filters revoked content hashes out of both the
+   * offer and accept steps that follow — see `core/src/security/
+   * revocation.ts`'s doc comment for the full opportunistic-gossip design
+   * and authorization model. Omit to skip the revocation round entirely
+   * (default; keeps existing callers/tests unchanged) — **both sides of a
+   * swap must agree on whether this is configured**, since (unlike
+   * `signatureVerifier`, a purely local filter) sending or expecting an
+   * extra protocol round is not something one side can do unilaterally
+   * without the other side's protocol expectations lining up; see this
+   * file's own revocation-round implementation below for exactly how that
+   * round is structured.
+   */
+  readonly revocationLog?: RevocationLogPort;
+  /**
+   * Structured swap-lifecycle and security event emission (issue #52).
+   * Omit to skip logging entirely (default). See `core`'s `LoggerPort` doc
+   * comment for why this is a port rather than a direct `console.log` call.
+   */
+  readonly logger?: LoggerPort;
 }
 
 /** The outcome of one completed swap, from this device's point of view. */
@@ -263,6 +349,10 @@ export interface SwapOutcome {
   readonly accepted: readonly Item[];
   /** Items the peer offered that failed signature verification (issue #58) — tampered or unsigned, dropped before `AcceptPolicy` ever saw them. Always empty when `signatureVerifier` is not configured. */
   readonly rejectedUnverified: readonly Item[];
+  /** Items the peer offered that exceeded the per-token size budget (issue #49 — content validation on ingest) — dropped before signature verification or `AcceptPolicy` ever saw them. */
+  readonly rejectedOversized: readonly Item[];
+  /** Content hashes removed from this device's own library this swap because a newly-learned (or already-known) revocation applied to them (issue #51). Always empty when `revocationLog` is not configured. */
+  readonly revoked: readonly string[];
   /** What this device's `EvictionPolicy` evicted to make room for `accepted`. */
   readonly evicted: readonly Item[];
   /** The swap state machine's final state — `{ phase: "completed" }` on success. */
@@ -358,6 +448,9 @@ export class SwapService {
       acceptPolicy,
       evictionPolicy,
       signatureVerifier,
+      swapRateLimiter,
+      revocationLog,
+      logger,
     } = this.deps;
     const suppressionWindowMs =
       this.deps.encounterSuppressionWindowMs ?? DEFAULT_ENCOUNTER_SUPPRESSION_WINDOW_MS;
@@ -365,12 +458,79 @@ export class SwapService {
     const libraryCapacity = this.deps.libraryCapacity ?? DEFAULT_LIBRARY_CAPACITY;
 
     let state = createInitialSwapState();
+    logger?.log({ event: "swap.started", peerId: peer.address.id, peerKind: peer.kind });
     try {
       state = unwrapTransition(transition(state, { type: "PEER_DISCOVERED", peerKind: peer.kind }));
+
+      // --- Rate limiting (issue #49): checked before ANY transport round
+      // trip, policy call, or repository access — a flooding peer is
+      // aborted here, before it can cost this device anything beyond one
+      // Map lookup. See `SwapServiceDeps.swapRateLimiter`'s doc comment for
+      // the keying choice and its disclosed Sybil-evasion limitation. ---
+      if (swapRateLimiter) {
+        const decision = swapRateLimiter.recordAndCheck(peer.address.id, clock.now());
+        if (!decision.allowed) {
+          logger?.log({
+            event: "security.rate_limited",
+            peerId: peer.address.id,
+            countInWindow: decision.countInWindow,
+            limit: decision.limit,
+          });
+          throw new Error(
+            `SwapService: peer "${peer.address.id}" exceeded the swap-attempt rate limit ` +
+              `(${String(decision.countInWindow)} attempts, limit ${String(decision.limit)}).`,
+          );
+        }
+      }
+
       state = unwrapTransition(transition(state, { type: "BEGIN_NEGOTIATION" }));
 
+      // --- Revocation round (issue #51): exchanged first, so both the
+      // offer and accept steps below can filter out content either side
+      // already knows is revoked. Skipped entirely when `revocationLog` is
+      // not configured (both sides must agree — see this file's doc
+      // comment on `SwapServiceDeps.revocationLog`). ---
+      let workingLibrary = library;
+      const revokedThisSwap: string[] = [];
+      const knownRevokedHashes = new Set<string>();
+      if (revocationLog) {
+        const myRevocations = await revocationLog.listAll();
+        for (const entry of myRevocations) knownRevokedHashes.add(entry.contentHash);
+
+        await transport.send(
+          peer.address,
+          encodeSwapProtocolMessage(createRevocationMessage(myRevocations)),
+        );
+        const inboundRevocation = decodeSwapProtocolMessage(
+          (await receiveWithTimeout(transport, receiveTimeoutMs)).message,
+        );
+        if (inboundRevocation.kind !== "revocation") {
+          throw new Error(
+            `SwapService: expected a "revocation" message, got "${inboundRevocation.kind}" ` +
+              `(both sides of a swap must agree on whether revocationLog is configured).`,
+          );
+        }
+
+        for (const entry of inboundRevocation.body.revocations) {
+          const verified = signatureVerifier
+            ? verifyRevocationEntrySignature(entry, signatureVerifier)
+            : true; // no verifier configured — trusted as-is, matching the token-verification convention (see this file's doc comment)
+          if (!verified) continue;
+
+          await revocationLog.record(entry);
+          knownRevokedHashes.add(entry.contentHash);
+
+          const heldEntry = workingLibrary.entries.get(entry.contentHash);
+          if (heldEntry && isRevocationAuthorizedForToken(entry, heldEntry.token)) {
+            workingLibrary = unwrapLibraryOp(removeItem(workingLibrary, entry.contentHash));
+            revokedThisSwap.push(entry.contentHash);
+            logger?.log({ event: "moderation.revocation_applied", contentHash: entry.contentHash });
+          }
+        }
+      }
+
       // --- Offer step, with encounter-memory suppression (SPEC.md §6.4) ---
-      const candidateOffer = offerPolicy.selectOffer(library, peer.kind);
+      const candidateOffer = offerPolicy.selectOffer(workingLibrary, peer.kind);
       const now = clock.now();
       const offerHistory = await loadEncounterHistory(encounterLog, candidateOffer);
       const offered = filterSuppressedCandidates(
@@ -388,15 +548,47 @@ export class SwapService {
         throw new Error(`SwapService: expected an "offer" message, got "${inboundOffer.kind}"`);
       }
 
+      // --- Content validation on ingest (issue #49): reject a wildly
+      // oversized offer outright, and drop any individual item exceeding
+      // the ~5 KB token budget — both BEFORE signature verification or
+      // AcceptPolicy ever sees them. ---
+      const {
+        accepted: sizeValidatedOffer,
+        rejectedOversizedItems,
+        rejectedWholeOfferTooLarge,
+      } = validateOfferItems(inboundOffer.body.items);
+      if (rejectedWholeOfferTooLarge) {
+        logger?.log({
+          event: "security.offer_rejected_too_large",
+          peerId: peer.address.id,
+          itemCount: inboundOffer.body.items.length,
+        });
+        throw new Error(
+          `SwapService: peer "${peer.address.id}" offered an implausibly large number of items ` +
+            `(${String(inboundOffer.body.items.length)}) — rejected outright.`,
+        );
+      }
+      if (rejectedOversizedItems.length > 0) {
+        logger?.log({
+          event: "security.items_rejected_oversized",
+          peerId: peer.address.id,
+          count: rejectedOversizedItems.length,
+        });
+      }
+
       // --- Signature verification (issue #58): drop unsigned/tampered items
       // before AcceptPolicy ever sees them. Skipped entirely when no
       // verifier is configured — see this file's doc comment. ---
-      const { verified: peerOffer, rejected: rejectedUnverified } = signatureVerifier
-        ? partitionBySignature(inboundOffer.body.items, signatureVerifier)
-        : { verified: inboundOffer.body.items, rejected: [] as readonly Item[] };
+      const { verified: verifiedOffer, rejected: rejectedUnverified } = signatureVerifier
+        ? partitionBySignature(sizeValidatedOffer, signatureVerifier)
+        : { verified: sizeValidatedOffer, rejected: [] as readonly Item[] };
+
+      // --- Moderation filter (issue #51): never (re-)accept content this
+      // device already knows is revoked, even if the peer still offers it. ---
+      const peerOffer = verifiedOffer.filter((item) => !knownRevokedHashes.has(item.contentHash));
 
       // --- Accept step ---
-      const acceptedBeforeHop = acceptPolicy.selectAccept(peerOffer, library);
+      const acceptedBeforeHop = acceptPolicy.selectAccept(peerOffer, workingLibrary);
 
       await transport.send(
         peer.address,
@@ -422,6 +614,12 @@ export class SwapService {
       state = unwrapTransition(
         transition(state, { type: "NEGOTIATION_COMPLETE", toSend: sent, toReceive: accepted }),
       );
+      logger?.log({
+        event: "swap.negotiated",
+        peerId: peer.address.id,
+        sentCount: sent.length,
+        acceptedCount: accepted.length,
+      });
 
       // --- Transfer step: accepted tokens move into this device's own
       // repository. No network call happens between here and the end of
@@ -433,9 +631,14 @@ export class SwapService {
       state = unwrapTransition(
         transition(state, { type: "TRANSFER_COMPLETE", sent, received: accepted }),
       );
+      logger?.log({
+        event: "swap.transferred",
+        peerId: peer.address.id,
+        receivedCount: accepted.length,
+      });
 
       // --- Reconcile step: EvictionPolicy makes room, then accepted items land in the library ---
-      let nextLibrary = library;
+      let nextLibrary = workingLibrary;
       const evicted = evictionPolicy.selectEvict(nextLibrary, accepted);
       for (const evictedItem of evicted) {
         nextLibrary = unwrapLibraryOp(removeItem(nextLibrary, evictedItem.contentHash));
@@ -459,10 +662,17 @@ export class SwapService {
         sent,
         accepted,
         rejectedUnverified,
+        rejectedOversized: rejectedOversizedItems,
+        revoked: revokedThisSwap,
         evicted,
         state,
       };
       this.deps.activityLog?.record(outcome);
+      logger?.log({
+        event: "swap.reconciled",
+        peerId: peer.address.id,
+        evictedCount: evicted.length,
+      });
       return outcome;
     } catch (error) {
       // --- issue #47: any failure past this point drives a real ABORT
@@ -474,6 +684,7 @@ export class SwapService {
       const reason = error instanceof Error ? error.message : String(error);
       const aborted = transition(state, { type: "ABORT", reason });
       const finalState = aborted.ok ? aborted.state : state;
+      logger?.log({ event: "swap.aborted", peerId: peer.address.id, reason });
       // Best-effort release of this peer's transport-level resources
       // (`HttpTransportClient`'s background long-poll loop, `HttpTransportServer`'s
       // queued outbound messages/pending long-poll — see each adapter's

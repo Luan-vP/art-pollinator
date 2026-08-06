@@ -16,3 +16,6 @@ export * from "./in-memory-scheduler-port.js";
 export * from "./in-memory-signature-verifier-port.js";
 export * from "./in-memory-network-status-port.js";
 export * from "./in-memory-blob-fetch-queue-store-port.js";
+export * from "./in-memory-revocation-log-port.js";
+export * from "./in-memory-logger-port.js";
+export * from "./in-memory-security-status-port.js";

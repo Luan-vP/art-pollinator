@@ -40,6 +40,7 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set([
   "accept",
   "transfer",
   "reconcile-ack",
+  "revocation",
 ]);
 
 /** Encode a `SwapProtocolMessage` to canonical bytes for `TransportPort.send`. */

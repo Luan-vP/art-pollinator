@@ -11,7 +11,7 @@
  * transport needs to implement; everything above that line is these types
  * plus `./swap-message-codec.ts`.
  *
- * ## The five message kinds (SPEC.md §6.2's flow)
+ * ## The six message kinds (SPEC.md §6.2's flow, plus moderation)
  *
  * `discover-ack`, `offer`, `accept`, `transfer`, `reconcile-ack` — one per
  * step of "discover a peer → exchange tokens → negotiate → transfer →
@@ -28,6 +28,13 @@
  * the wire format needs revisiting when those later features start actually
  * sending them.
  *
+ * `revocation` (issue #51, added in the batch that bumped
+ * {@link SWAP_PROTOCOL_VERSION} to 2) carries this side's currently-known
+ * moderation takedowns, exchanged as the first round of every swap — see
+ * `core/src/security/revocation.ts`'s doc comment for the full opportunistic-
+ * gossip design and `app/src/swap/swap-service.ts` for where it's actually
+ * sent/received.
+ *
  * ## Versioning and negotiation strategy
  *
  * Every message is wrapped in an envelope carrying a numeric `version`.
@@ -43,12 +50,20 @@
  * is deliberately kept generic now so a downgrade path can be added later
  * without a breaking change to this module's API. See
  * `docs/adr/0009-swap-protocol-versioning.md`.
+ *
+ * **Version 2** (issue #51): bumped from 1 solely to add the `revocation`
+ * message kind above. No pre-existing shipped deployment of this codebase
+ * exists to interoperate with (Phase 2 has not shipped), so — consistent
+ * with ADR-0009's own "reject on mismatch, there is nothing to downgrade to
+ * yet" reasoning — this is a clean bump, not a compatibility exercise. See
+ * `docs/adr/0015-opportunistic-revocation-protocol.md`.
  */
 import type { PeerKind } from "../ports/discovery-port.js";
 import type { MetadataToken } from "../metadata/metadata-token.js";
+import type { RevocationEntry } from "../security/revocation.js";
 
-/** The only protocol version this codebase currently speaks. */
-export const SWAP_PROTOCOL_VERSION = 1;
+/** The only protocol version this codebase currently speaks. Bumped to 2 by issue #51 (adding the `revocation` message kind) — see this file's doc comment. */
+export const SWAP_PROTOCOL_VERSION = 2;
 
 /** A message envelope: every `SwapProtocolMessage` carries a `version` and a `kind` alongside its `body`. */
 export interface SwapProtocolEnvelope<Kind extends string, Body> {
@@ -87,8 +102,19 @@ export interface ReconcileAckBody {
 }
 export type ReconcileAckMessage = SwapProtocolEnvelope<"reconcile-ack", ReconcileAckBody>;
 
+/** Issue #51 (moderation and takedown): this side's currently-known revocations, exchanged as the first round of a swap so both peers can filter revoked content out of the offer/accept steps that follow. See `core/src/security/revocation.ts`'s doc comment. */
+export interface RevocationBody {
+  readonly revocations: readonly RevocationEntry[];
+}
+export type RevocationMessage = SwapProtocolEnvelope<"revocation", RevocationBody>;
+
 export type SwapProtocolMessage =
-  DiscoverAckMessage | OfferMessage | AcceptMessage | TransferMessage | ReconcileAckMessage;
+  | DiscoverAckMessage
+  | OfferMessage
+  | AcceptMessage
+  | TransferMessage
+  | ReconcileAckMessage
+  | RevocationMessage;
 
 /** `true` if `version` is one this build of the codec can decode. See this module's doc comment for the negotiation strategy. */
 export function isSupportedVersion(version: number): boolean {
@@ -144,4 +170,10 @@ export function createReconcileAckMessage(
   evictedContentHashes: readonly string[],
 ): ReconcileAckMessage {
   return envelope("reconcile-ack", { evictedContentHashes });
+}
+
+export function createRevocationMessage(
+  revocations: readonly RevocationEntry[],
+): RevocationMessage {
+  return envelope("revocation", { revocations });
 }

@@ -20,3 +20,6 @@ export * from "./scheduler-port.js";
 export * from "./signature-verifier-port.js";
 export * from "./network-status-port.js";
 export * from "./blob-fetch-queue-store-port.js";
+export * from "./revocation-log-port.js";
+export * from "./logger-port.js";
+export * from "./security-status-port.js";

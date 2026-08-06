@@ -31,12 +31,37 @@
  * `receive()` activity for it, until `disconnect()`) — see
  * `./http-transport-server.ts`'s doc comment for the server-side half of
  * this rendezvous.
+ *
+ * ## Authentication (issue #49) — an optional `identity`, performing the
+ * client half of `HttpTransportServer`'s challenge-response handshake
+ *
+ * When `identity` is supplied, this client authenticates to a peer the
+ * first time it's addressed (by either `send()` or `connect()`), before
+ * any `/messages` traffic: request a challenge (`POST
+ * .../handshake/challenge`), sign it with `identity.sign(...)`, and submit
+ * the response (`POST .../handshake/response`). A peer whose
+ * `HttpTransportServer` has `security` configured rejects unauthenticated
+ * `/messages` traffic with `401` — see that class's doc comment for the
+ * server-side mechanism and trust model this is the client-side
+ * counterpart of. Omitting `identity` is fully backward compatible
+ * (default; existing callers/tests unaffected) — the resulting client
+ * simply never authenticates, which is fine against a server with no
+ * `security` configured (the pre-#49 default) and will be rejected by one
+ * that does require it.
  */
-import type { PeerAddress, TransportPort } from "@art-pollinator/core";
+import {
+  hexDecode,
+  hexEncode,
+  type IdentityPort,
+  type PeerAddress,
+  type TransportPort,
+} from "@art-pollinator/core";
 
 export interface HttpTransportClientOptions {
   /** This client's own opaque peer id, sent as `x-peer-id` / `?peer=`. */
   readonly selfAddress: PeerAddress;
+  /** This device's identity, used to authenticate to peers that require it (issue #49). Omit to never attempt authentication — see this file's doc comment. */
+  readonly identity?: IdentityPort;
 }
 
 interface InboundMessage {
@@ -46,12 +71,16 @@ interface InboundMessage {
 
 export class HttpTransportClient implements TransportPort {
   private readonly selfAddress: PeerAddress;
+  private readonly identity: IdentityPort | undefined;
   private readonly inbox: InboundMessage[] = [];
   private readonly waiters: ((message: InboundMessage) => void)[] = [];
   private readonly pollersByPeerId = new Map<string, AbortController>();
+  private readonly authenticatedPeerIds = new Set<string>();
+  private readonly authenticationByPeerId = new Map<string, Promise<void>>();
 
   constructor(options: HttpTransportClientOptions) {
     this.selfAddress = options.selfAddress;
+    this.identity = options.identity;
   }
 
   /**
@@ -69,6 +98,7 @@ export class HttpTransportClient implements TransportPort {
   }
 
   async send(peer: PeerAddress, message: Uint8Array): Promise<void> {
+    await this.authenticate(peer);
     this.ensurePolling(peer);
     const response = await fetch(`${peer.id}/messages`, {
       method: "POST",
@@ -99,7 +129,75 @@ export class HttpTransportClient implements TransportPort {
       controller.abort();
       this.pollersByPeerId.delete(peer.id);
     }
+    // A session on the server side has its own TTL and is forgotten on the
+    // server's own `disconnect()` regardless — dropping it here too means a
+    // later reconnection to the same peer id re-authenticates rather than
+    // assuming a stale session is still valid.
+    this.authenticatedPeerIds.delete(peer.id);
+    this.authenticationByPeerId.delete(peer.id);
     return Promise.resolve();
+  }
+
+  /**
+   * Perform the challenge-response handshake against `peer` exactly once
+   * (memoized per peer id, including in-flight de-duplication for
+   * concurrent callers) — a no-op if `identity` was not supplied. Throws if
+   * the peer's `HttpTransportServer` rejects the handshake (no `security`
+   * configured there is *not* a failure — `/handshake/challenge` simply
+   * won't exist as a route and this request 404s, which this method
+   * deliberately treats as "nothing to authenticate," not an error, since a
+   * server that never asked for authentication shouldn't make an
+   * authenticating client fail).
+   */
+  private authenticate(peer: PeerAddress): Promise<void> {
+    if (!this.identity || this.authenticatedPeerIds.has(peer.id)) {
+      return Promise.resolve();
+    }
+    let inFlight = this.authenticationByPeerId.get(peer.id);
+    if (!inFlight) {
+      inFlight = this.performHandshake(peer).then(() => {
+        this.authenticatedPeerIds.add(peer.id);
+      });
+      this.authenticationByPeerId.set(peer.id, inFlight);
+    }
+    return inFlight;
+  }
+
+  private async performHandshake(peer: PeerAddress): Promise<void> {
+    const identity = this.identity;
+    if (!identity) return;
+
+    const challengeResponse = await fetch(`${peer.id}/handshake/challenge`, {
+      method: "POST",
+      headers: { "x-peer-id": this.selfAddress.id },
+    });
+    if (challengeResponse.status === 404) {
+      return; // this peer has no `security` configured — nothing to authenticate against
+    }
+    if (!challengeResponse.ok) {
+      throw new Error(
+        `HttpTransportClient("${this.selfAddress.id}"): handshake challenge request to "${peer.id}" ` +
+          `failed with HTTP ${String(challengeResponse.status)}`,
+      );
+    }
+    const { nonce } = (await challengeResponse.json()) as { nonce: string };
+    const current = await identity.getCurrentIdentity();
+    const signature = await identity.sign(hexDecode(nonce));
+
+    const responseResponse = await fetch(`${peer.id}/handshake/response`, {
+      method: "POST",
+      headers: { "x-peer-id": this.selfAddress.id, "content-type": "application/json" },
+      body: JSON.stringify({
+        publicKey: hexEncode(current.publicKey),
+        signature: hexEncode(signature),
+      }),
+    });
+    if (!responseResponse.ok) {
+      throw new Error(
+        `HttpTransportClient("${this.selfAddress.id}"): handshake with "${peer.id}" was rejected ` +
+          `(HTTP ${String(responseResponse.status)})`,
+      );
+    }
   }
 
   /** Start (if not already running) a background long-poll loop delivering `peer`'s messages into the shared inbox. Idempotent per peer. */
@@ -111,6 +209,16 @@ export class HttpTransportClient implements TransportPort {
   }
 
   private async pollLoop(peer: PeerAddress, controller: AbortController): Promise<void> {
+    try {
+      await this.authenticate(peer);
+    } catch {
+      // Authentication failure surfaces to the caller via `send()`'s own
+      // `await this.authenticate(peer)` (the realistic path — a device
+      // always `send()`s before it cares about `receive()`ing from a given
+      // peer). This loop simply never starts rather than spinning forever
+      // against a peer that will 401 every long-poll.
+      return;
+    }
     const url = `${peer.id}/messages?peer=${encodeURIComponent(this.selfAddress.id)}`;
     while (!controller.signal.aborted) {
       let response: Response;
@@ -122,6 +230,22 @@ export class HttpTransportClient implements TransportPort {
       if (controller.signal.aborted) return;
       if (response.status === 204) {
         continue; // long-poll timed out server-side with nothing queued — retry
+      }
+      if (response.status === 401) {
+        // The server has stopped recognizing this peer as authenticated —
+        // most realistically its session expired, or it explicitly
+        // `disconnect()`ed this peer (issue #49's session bookkeeping).
+        // Retrying immediately would just hammer the server with the exact
+        // same rejected request forever (a real, previously-latent
+        // resource-exhaustion risk this batch's authentication work made
+        // newly reachable) — stop this peer's loop instead. The in-flight
+        // `SwapService.swap()` call this was serving already has its own
+        // bounded `receiveTimeoutMs` (issue #47) to surface "peer
+        // unreachable" cleanly; a fresh `send()`/`connect()` for this peer
+        // later re-authenticates from scratch (`authenticate()` is only
+        // skipped for peers already in `authenticatedPeerIds`, and this
+        // loop does not add to that set).
+        return;
       }
       if (!response.ok) {
         continue; // transient server error — retry rather than kill the whole loop over one bad response
