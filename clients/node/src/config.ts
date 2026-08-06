@@ -28,6 +28,9 @@ import { type LibraryCapacity } from "@art-pollinator/core";
  */
 export const DEFAULT_TRANSPORT_PORT = 47822;
 
+/** Port `AdminHttpServer` listens on, localhost-only (issue #50) — a third, distinct default so an operator/firewall can tell all three of this node's listeners apart at a glance. */
+export const DEFAULT_ADMIN_PORT = 47824;
+
 export interface NodeServerConfig {
   /** Interface both the transport server and the discovery responder bind to. `"0.0.0.0"` (every interface) is the real-deployment default; tests override to `"127.0.0.1"`. */
   readonly host: string;
@@ -35,14 +38,29 @@ export interface NodeServerConfig {
   readonly transportPort: number;
   /** Port `LanDiscoveryResponder` listens on. */
   readonly discoveryPort: number;
+  /** Port `AdminHttpServer` listens on — always bound to `127.0.0.1` regardless of `host` (issue #50; see `AdminHttpServer`'s doc comment). */
+  readonly adminPort: number;
   /** Path to the SQLite database file. `":memory:"` is valid (ephemeral, does not survive restart — see `SqliteMetadataRepository`'s own doc comment) and is what tests use by default. */
   readonly dbPath: string;
-  /** Directory `NodeSignatureVerifier`'s companion identity storage would use, if this composition root ever needs to *sign* (it currently only verifies inbound signatures — see the composition root's doc comment). Reserved for forward compatibility with a future authoring flow. */
+  /** Directory this node's identity (issue #57's `NodeIdentityAdapter`, `mode: "node"`) and, when TLS is enabled, its self-signed certificate (issue #49) are persisted under. */
   readonly identityStorageDir: string;
   /** This node's configured `Library` capacity (issue #46). */
   readonly capacity: LibraryCapacity;
   /** How long a peer's long-poll `GET /messages` waits before a `204`. Passed straight through to `HttpTransportServer`. */
   readonly longPollTimeoutMs?: number;
+  /**
+   * Enables HTTPS on the public swap port, using a self-signed certificate
+   * generated (and persisted) via `./composition/tls-cert.ts` (issue #49).
+   * Defaults to `false`: this codebase's own cross-platform swap client
+   * (`HttpTransportClient`, used by the browser and mobile targets via
+   * plain `fetch`) cannot yet verify a self-signed certificate without an
+   * operator additionally configuring their OS/browser to trust it — see
+   * `docs/adr/0014-transport-tls-scope.md`. An operator who has arranged
+   * client-side trust out of band (or is only ever dialled into by another
+   * Node-based client, which *can* pin a fingerprint — see that ADR) may
+   * set `ARTPOLLINATOR_NODE_TLS_ENABLED=true` today.
+   */
+  readonly tlsEnabled: boolean;
 }
 
 /**
@@ -69,13 +87,21 @@ export function readConfigFromEnv(env: NodeJS.ProcessEnv = process.env): NodeSer
     host: env.ARTPOLLINATOR_NODE_HOST ?? "0.0.0.0",
     transportPort: envInt(env, "ARTPOLLINATOR_NODE_TRANSPORT_PORT") ?? DEFAULT_TRANSPORT_PORT,
     discoveryPort: envInt(env, "ARTPOLLINATOR_NODE_DISCOVERY_PORT") ?? DEFAULT_LAN_DISCOVERY_PORT,
+    adminPort: envInt(env, "ARTPOLLINATOR_NODE_ADMIN_PORT") ?? DEFAULT_ADMIN_PORT,
     dbPath:
       env.ARTPOLLINATOR_NODE_DB_PATH ??
       join(homedir(), ".art-pollinator", "node", "library.sqlite3"),
     identityStorageDir:
       env.ARTPOLLINATOR_NODE_IDENTITY_DIR ?? join(homedir(), ".art-pollinator", "node", "identity"),
     capacity: resolveNodeCapacity(capacityOverrides),
+    tlsEnabled: envBool(env, "ARTPOLLINATOR_NODE_TLS_ENABLED") ?? false,
   };
+}
+
+function envBool(env: NodeJS.ProcessEnv, name: string): boolean | undefined {
+  const raw = env[name];
+  if (raw === undefined || raw === "") return undefined;
+  return raw === "1" || raw.toLowerCase() === "true";
 }
 
 function envInt(env: NodeJS.ProcessEnv, name: string): number | undefined {

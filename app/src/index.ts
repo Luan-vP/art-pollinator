@@ -20,3 +20,5 @@ export * from "./swap/short-contact-swap-profile.js";
 export * from "./swap/swap-activity-log.js";
 export * from "./blob/deferred-blob-queue.js";
 export * from "./library/library-service.js";
+export * from "./identity/sign-revocation.js";
+export * from "./admin/admin-service.js";

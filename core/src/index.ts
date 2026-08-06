@@ -21,6 +21,19 @@
  * the `BlobStorePort` contract suite (#40), and two new ports for the
  * deferred blob queue (#41) — `NetworkStatusPort` and
  * `BlobFetchQueueStorePort`, each with an in-memory fake.
+ *
+ * This batch (Phase 2, #49/#51/#52 — security model, moderation, and
+ * observability): `./security/rate-limiter.js` (a pure sliding-window
+ * limiter — the concrete teeth behind SPEC.md section 5's "AcceptPolicy is
+ * a security control"), `./security/peer-auth.js` (challenge-response
+ * verification, the domain half of connection-level authentication),
+ * `./security/ingest-validation.js` (content validation on ingest, enforced
+ * before anything reaches `AcceptPolicy`), `./security/revocation.js` and
+ * `RevocationLogPort` (opportunistic moderation/takedown, issue #51 — see
+ * that module's doc comment for the gossip design and authorization model),
+ * `LoggerPort` (structured observability events, issue #52), and
+ * `./library/library-capacity-bounds.js` (the shared bounds check behind
+ * `AdminService`'s runtime capacity changes, issue #50).
  */
 export * from "./constants.js";
 export * from "./priority/priority.js";
@@ -44,3 +57,8 @@ export * from "./protocol/swap-message.js";
 export * from "./protocol/swap-message-codec.js";
 export * from "./ports/transport-port-contract-suite.js";
 export * from "./ports/blob-store-contract-suite.js";
+export * from "./security/rate-limiter.js";
+export * from "./security/peer-auth.js";
+export * from "./security/ingest-validation.js";
+export * from "./security/revocation.js";
+export * from "./library/library-capacity-bounds.js";

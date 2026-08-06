@@ -21,9 +21,11 @@ function testConfig(overrides: Partial<NodeServerConfig> = {}): NodeServerConfig
     host: "127.0.0.1",
     transportPort: 0,
     discoveryPort: 0,
+    adminPort: 0,
     dbPath: join(dbDir, "library.sqlite3"),
     identityStorageDir: join(dbDir, "identity"),
     capacity: NODE_DEFAULT_CAPACITY,
+    tlsEnabled: false,
     ...overrides,
   };
 }

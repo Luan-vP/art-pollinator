@@ -1,0 +1,112 @@
+# ArtPollinator — Threat Model
+
+**Status:** Living document · Owner: security model for Phase 2 (issue #49) · Last updated alongside `feat/phase2-security-operations`
+
+> Companion documents: [`docs/adr/0013-peer-connection-authentication.md`](../adr/0013-peer-connection-authentication.md) (auth design), [`docs/adr/0014-transport-tls-scope.md`](../adr/0014-transport-tls-scope.md) (TLS scope), [`docs/adr/0015-opportunistic-revocation-protocol.md`](../adr/0015-opportunistic-revocation-protocol.md) (moderation).
+
+This document is deliberately concrete to _this_ codebase — its assets are the actual data structures in `core`, its attack vectors are the actual routes `HttpTransportServer` exposes, and its mitigations point at the actual code that implements them. Generic security boilerplate is not useful here; a reviewer should be able to check each claim against a specific file.
+
+## 1. Adversaries
+
+| Adversary                                                           | Capability                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Where they show up in this codebase                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A. A hostile person/device, street-level (BLE)**                  | Physical proximity to a phone during a BLE contact window (SPEC.md §6.1). Can advertise a fabricated identity, send malformed tokens, and — because SPEC.md §6.3 permits one-way seeding — flood a victim's `AcceptPolicy` without ever intending to receive anything back. Cannot forge another identity's signature (Ed25519 is not attacker-forgeable) but can mint unlimited fresh identities for free (SPEC.md §7's rotating identities are _designed_ to be free — the same property a Sybil attacker exploits). | `core`'s swap protocol (transport-agnostic — the same threats and mitigations described here for HTTP apply structurally to `adapters/transport-ble`, though BLE's short contact window and connection-oriented pairing already bound flood duration more than HTTP does). |
+| **B. A hostile node operator, or a compromised node**               | A stationary node (SPEC.md §4) has a _persistent_ identity and a _much larger_ trust radius than a person: every device that ever swaps with it receives whatever it offers, and — before this batch — could reach it from anywhere on its Wi-Fi network with zero authentication. A hostile node can also (post-issue-#51) forge revocations for content it never authored, subject to the authorization check in `core/src/security/revocation.ts`.                                                                  | `clients/node`'s composition root; `adapters/transport-http/src/http-transport-server.ts`.                                                                                                                                                                                 |
+| **C. A hostile actor on the same Wi-Fi network as a node**          | Does not need to be the node's _operator_ — anyone on the LAN can attempt to reach `HttpTransportServer`'s public port. Before this batch: unauthenticated, so this adversary could POST arbitrary swap traffic, exhaust connections, or (via the pre-#49 `?peer=` design) long-poll for messages meant for a _different_ peer id entirely, since nothing checked that the caller actually controlled that identity.                                                                                                   | Same file as B; this is the adversary issue #49's authentication work is most directly aimed at.                                                                                                                                                                           |
+| **D. A passive network observer (same Wi-Fi network, or upstream)** | Can read unencrypted traffic. Before this batch, all HTTP swap traffic was plaintext — content metadata, provenance, and peer ids were all visible to anyone who could sniff the network.                                                                                                                                                                                                                                                                                                                              | Motivates the TLS work — see §3 and ADR-0014.                                                                                                                                                                                                                              |
+| **E. A malicious content publisher**                                | Signs and circulates a token that is well-formed and validly signed, but whose _content_ is unwanted (abusive, illegal, or simply something the network later needs to take down). Signature validity says nothing about content legitimacy.                                                                                                                                                                                                                                                                           | Motivates moderation/takedown — issue #51, ADR-0015.                                                                                                                                                                                                                       |
+
+## 2. Assets
+
+1. **The library's content** (`core`'s `Library` aggregate) — the actual metadata tokens a device holds. Threatened by flooding (exhausting swappable slots with junk from adversary A/B) and by unauthorized removal (a forged revocation, adversary B/E).
+2. **The device's identity keypair** (`IdentityPort`/`adapters/identity-node`'s private key material). Never transmitted — `IdentityPort.sign` returns only signatures, never the key — so the primary threat is _local_ (filesystem permissions; `NodeIdentityAdapter` already restricts its identity file to `0o600`/`0o700`, see that adapter's doc comment) rather than _network_ (nothing in this batch's protocol work exposes it).
+3. **The user's inferred location/movement patterns**, via provenance. ADR-0007 already resolved this for the _data model_ (hop count only, never an identified path) — a token cannot itself become a diary of which venues its holder visited. This threat model's job is to make sure nothing added in this batch reopens that: the authentication handshake, revocation entries, and rate-limit logging introduced here carry peer ids and public keys, not location data, and none of them are persisted or forwarded beyond this device's own logs/sessions.
+4. **This device's compute/memory/connection budget** — threatened directly by resource-exhaustion attacks (§4).
+5. **The integrity of the moderation system itself** (issue #51) — a forged or unauthorized revocation is itself an attack (censorship via false takedown, or evasion via false "not actually revoked" claims).
+
+## 3. Attack vectors and mitigations
+
+### 3.1 Flooding via one-way seeding (SPEC.md §5's named threat)
+
+**Vector:** adversary A or B repeatedly offers content to a victim, which is free to attempt regardless of whether the victim ever accepts, because one-way swaps are permitted by design.
+
+**Mitigations (this batch):**
+
+- `SwapService`'s optional `swapRateLimiter` (`core`'s `SlidingWindowRateLimiter`) rejects a peer's swap attempt _before any negotiation, policy call, or repository access_ once it exceeds a configured ceiling per time window — see `app/src/swap/swap-service.ts`'s doc comment and `app/src/swap/security.test.ts`'s explicit flooding test.
+- `HttpTransportServer`'s `security.maxMessagesPerIdentityPerWindow` rate-limits `POST /messages` per _authenticated_ identity, independent of `SwapService`'s own limiter — defense in depth at a different layer, tested in `adapters/transport-http/src/http-transport-server-security.test.ts`.
+- `HttpTransportServer`'s `security.maxHandshakeAttemptsPerWindow` rate-limits handshake attempts per _remote IP_ — this is the one limiter a free-identity Sybil attacker cannot trivially evade (a real TCP connection from a real IP costs more than a keypair), named explicitly as the mitigating pair for the identity-keyed limiter's own Sybil weakness (see `SwapServiceDeps.swapRateLimiter`'s doc comment).
+
+**Residual risk:** an adversary with many source IPs (a botnet, or IPv6's large address space) can still exhaust the IP-keyed limiter's effective ceiling by spreading load. This is a fundamentally hard problem for any anonymous-by-design network (SPEC.md §7) and is not solved by this batch — noted rather than silently assumed away.
+
+### 3.2 Connection exhaustion
+
+**Vector:** adversary C opens many simultaneous connections to `HttpTransportServer`, exhausting file descriptors/memory before any application-level check ever runs.
+
+**Mitigation:** `HttpTransportServer`'s `maxConcurrentConnections` option sets the underlying `node:http`/`node:https` server's own `maxConnections`, Node's native mechanism for refusing connections past a configured count — not a hand-rolled counter that could itself be a bug surface.
+
+### 3.3 Malformed/oversized payloads
+
+**Vector:** adversary A/B/C sends a request body far beyond the ~5 KB token budget (AGENTS.md §6), or an `offer` message carrying an implausible number of items, attempting to exhaust memory buffering it or CPU processing it.
+
+**Mitigations (layered, each independently sufficient):**
+
+- **Transport layer:** `HttpTransportServer`'s `readBody` aborts (413) the moment accumulated bytes exceed `maxBodyBytes`, checked incrementally as chunks arrive — never fully buffers an oversized body first. Tested directly in `http-transport-server-security.test.ts`.
+- **Protocol layer:** `core`'s `decodeSwapProtocolMessage` already rejected malformed JSON/unsupported versions/unknown kinds before this batch.
+- **Content layer:** `core`'s `validateOfferItems` (`core/src/security/ingest-validation.ts`) rejects a whole offer exceeding `MAX_OFFER_ITEMS`, and drops any individual item exceeding the per-token size budget — applied by `SwapService` _before_ signature verification or `AcceptPolicy` ever see the data. Tested in `app/src/swap/security.test.ts`, including the explicit "no repository write" assertion the issue's DoD calls for.
+
+### 3.4 Signature forgery
+
+**Vector:** adversary A/B/E attempts to make a token or a revocation appear to originate from an identity it does not control.
+
+**Mitigation:** Ed25519 verification (`SignatureVerifierPort`, `adapters/identity-node`'s `NodeSignatureVerifier`) is computationally infeasible to forge without the private key — this was already true before this batch (issue #58) for tokens; this batch extends the _same_ verifier to two new uses: the authentication handshake (`core/src/security/peer-auth.ts`'s `verifyChallengeResponse`) and revocation entries (`core/src/security/revocation.ts`'s `verifyRevocationEntrySignature`). No new cryptographic primitive was introduced — see `docs/adr/0008-crypto-primitives-in-a-zero-dependency-core.md` for why signature verification is delegated to an adapter rather than hand-rolled.
+
+**What signature verification does _not_ prevent (an important distinction, see §3.6):** it proves _which key_ produced a message, never _whether that key is authorized_ to make the specific claim the message carries. A validly-signed revocation from key K for content signed by a _different_ key K′ is not a forgery — it verifies perfectly — it is an _authorization_ failure, checked separately (`isRevocationAuthorizedForToken`).
+
+### 3.5 Replay attacks
+
+**Vector:** adversary C captures a valid handshake response (challenge signature) and replays it later, or against a different node, attempting to impersonate the original signer without holding its key.
+
+**Mitigations:**
+
+- **Single-use challenges:** `HttpTransportServer` deletes a pending challenge the moment a response is submitted for it (successful or not) — a captured response cannot be replayed against a _future_ challenge for the same peer id, because that future challenge is a different, freshly-random nonce. Tested explicitly in `http-transport-server-security.test.ts`'s "a nonce is single-use" case.
+- **Bounded challenge TTL:** an issued challenge expires (`challengeTtlMs`, default 30s) if never answered, bounding how long a captured-but-unused challenge remains exploitable.
+- **Bounded session TTL:** a completed authentication is only valid for `sessionTtlMs` (default 10 minutes), after which the peer must re-authenticate — bounding the value of _any_ compromise of the authenticated-session state itself.
+- Each node/session pair uses its own nonce; a captured signature over node A's challenge does not verify against node B's differently-random challenge (Ed25519 signatures are message-specific).
+
+**Residual risk not addressed:** this is authentication of a _connection_, not of every message on it — a man-in-the-middle who can rewrite plaintext HTTP traffic _after_ a legitimate handshake could still inject/reorder swap messages within that already-authenticated session, unless TLS (§3.7) is also in effect. This is exactly why TLS remains a stated goal, not a "nice to have" — see ADR-0014 for the scope actually delivered.
+
+### 3.6 Unauthorized moderation (new to this batch, issue #51)
+
+**Vector:** adversary B/E constructs a validly-signed `RevocationEntry` for content it did not author, attempting to force other devices to delete legitimate content (censorship), or attempts to make a real takedown look invalid so devices keep circulating revoked content (evasion).
+
+**Mitigation:** `core/src/security/revocation.ts`'s `isRevocationAuthorizedForToken` requires the revoking key to match the _original content's own signer_ before a device that currently holds that content will act on the revocation. See ADR-0015 for the full authorization model, including the node-operator-takedown case (a node may unconditionally remove content from its _own_ library regardless of who signed it — that is ordinary moderation authority over one's own collection — but that local decision does not automatically bind other devices that hold a copy signed by someone else).
+
+**Residual risk, stated plainly:** a device that does **not** currently hold the referenced content cannot check authorization at all, and — per the opportunistic-gossip design (§1's whole reason moderation exists this way) — still relays the entry onward, trusting only that its signature is cryptographically well-formed. A sufficiently motivated adversary can therefore inject bogus revocation entries that propagate through devices unable to reject them, reaching a device that _does_ hold the real content and _can_ reject them at that point. The blast radius of this residual gap is bounded to "gossip noise, ultimately rejected where it matters" rather than "successful unauthorized takedown," but it is not zero-cost noise, and a future batch revisiting this should consider whether revocation entries need their own expiry/pruning to bound how long bogus ones circulate.
+
+### 3.7 Transport confidentiality (encryption in transit)
+
+**Vector:** adversary D reads plaintext swap traffic — token contents, peer ids, handshake public keys — off the wire.
+
+**Status:** partially closed. `HttpTransportServer` now supports real TLS (self-signed certificate, TOFU/fingerprint-pinned trust model — not a CA) as an **opt-in** capability (`config.tlsEnabled`), proven with a real TLS handshake test against a real certificate (`adapters/transport-http/src/http-transport-server-security.test.ts`, `clients/node/src/composition/tls-cert.test.ts`). It defaults to **off** because this codebase's cross-platform swap client (`HttpTransportClient`, shared by the browser and mobile targets via plain `fetch`) cannot yet verify a self-signed certificate without additional, platform-specific trust configuration — see ADR-0014 for the full reasoning and the concrete path to closing this the rest of the way.
+
+**Residual risk:** until an operator either enables TLS with a client-side trust story in place, or every client in practice, swap traffic on a given deployment remains observable to anyone else on the same network segment. This is the single largest deliberately-scoped gap in this batch, and it is documented here rather than glossed over specifically because the task's own framing calls transport confidentiality out as "a genuinely important gap to close if feasible" — it was feasible on the server side, and is closed there; the client side is a distinct, larger, platform-dependent piece of work.
+
+## 4. Summary table: what changed in this batch
+
+| Threat                                                            | Before this batch                            | After this batch                                                                                                                        |
+| ----------------------------------------------------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Anyone can POST to a node's `/messages`                           | Yes — zero authentication                    | No — requires a completed challenge-response handshake (opt-out only by omitting `security`, which no production composition root does) |
+| Anyone can long-poll another peer's inbox (`?peer=<victim>`)      | Yes — a real, previously unnoticed hole      | No — the same authentication gate covers `GET /messages`                                                                                |
+| A flooding peer's swap attempts are throttled                     | No                                           | Yes — two independent rate limiters (§3.1)                                                                                              |
+| Oversized/malformed offers reach `AcceptPolicy` or the repository | Yes (no size/count check existed on receipt) | No — validated and dropped/rejected first (§3.3)                                                                                        |
+| Transport traffic is encrypted                                    | No                                           | Opt-in, server-side complete, client-side a documented gap (§3.7)                                                                       |
+| Content can be taken down and the takedown propagates             | No mechanism existed                         | Yes, opportunistically, with a stated authorization model (§3.6)                                                                        |
+| Connection/body-size limits exist at the transport layer          | No                                           | Yes (§3.2, §3.3)                                                                                                                        |
+
+## 5. Open questions carried forward
+
+These mirror SPEC.md §11's own open questions and are not resolved by this batch — noted here so they are not lost:
+
+- **Anti-abuse and trust model (SPEC.md §11 Q6):** this batch's rate limiters are a real, working first line of defense, not a complete trust model. A reputation system (weighting "known-good" identities that have completed prior successful swaps more favorably — a hook this batch's `AdminService`/`SecurityStatusPort` design leaves room for but does not implement) is a natural next step.
+- **Cross-platform TLS client trust (§3.7):** the concrete next piece of work, scoped in ADR-0014.
+- **Revocation entry pruning/expiry (§3.6):** not addressed; revocation lists grow monotonically today.

@@ -62,7 +62,7 @@ export class LibraryService {
   private constructor(
     private readonly metadataRepository: MetadataRepositoryPort,
     initialLibrary: Library,
-    private readonly capacity: LibraryCapacity,
+    private capacity: LibraryCapacity,
   ) {
     this.library = initialLibrary;
   }
@@ -119,6 +119,29 @@ export class LibraryService {
   /** The current `Library` snapshot. */
   getLibrary(): Library {
     return this.library;
+  }
+
+  /** This service's currently-enforced `LibraryCapacity` (issue #50 — `AdminService`'s "view current administration state"). */
+  getCapacity(): LibraryCapacity {
+    return this.capacity;
+  }
+
+  /**
+   * Change the capacity enforced by every subsequent `add`/`lock`/`unlock`
+   * call (issue #50 — a node operator adjusting capacity at runtime, within
+   * the bounds issue #46 establishes; see `AdminService.setCapacity`, which
+   * validates *before* calling this). Does not retroactively evict anything
+   * already resident even if the new capacity is smaller than the current
+   * occupancy — `core`'s `EvictionPolicy` is the only mechanism that ever
+   * removes items, and only ever in response to a swap's own reconciliation
+   * step; a capacity *decrease* here simply means no further additions fit
+   * until natural turnover (evictions during future swaps) brings occupancy
+   * back under the new bound. This mirrors how `Library.addItem` itself
+   * already behaves — capacity is enforced going forward, never enforced by
+   * silently deleting existing state.
+   */
+  setCapacity(capacity: LibraryCapacity): void {
+    this.capacity = capacity;
   }
 
   /**
